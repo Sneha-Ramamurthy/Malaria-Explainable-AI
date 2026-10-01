@@ -4,11 +4,12 @@ Place the extracted `dataset/` folder inside this directory, then:
     python -m src.step1_data_audit
     python -m src.step2_build_dataset
     python -m src.step3_train      # ~4 min on CPU; saves models/mobilenetv2_cbam.keras
+    python -m src.step4_gradcam    # ~6 min on CPU (set CACHE=1 to reuse saved heatmaps)
 ## Steps
 1. Data audit  [done]
 2. Build inputs: colour->index decoding, sea/inland-water split, PROXY risk labels, 64x64 patches  [done]
 3. MobileNetV2+CBAM patch classifier + predicted high-risk map  [done]
-4. Grad-CAM
+4. Grad-CAM: patch + scene heatmaps, focus analysis, randomised-model check, GeoTIFF export  [done]
 5. SHAP
 6. CBAM attention
 7. Validation & fusion
