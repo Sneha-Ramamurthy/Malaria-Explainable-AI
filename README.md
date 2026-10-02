@@ -1,4 +1,4 @@
-# Malaria Risk Prediction - Explainable AI layer
+# Malaria Risk Prediction - Explainable AI layer.
 Place the extracted `dataset/` folder inside this directory, then:
     pip install -r requirements.txt
     python -m src.step1_data_audit
