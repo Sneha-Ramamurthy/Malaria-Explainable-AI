@@ -1,0 +1,9 @@
+numpy
+pandas
+rasterio
+matplotlib
+opencv-python-headless
+scikit-learn
+scipy
+shap
+tensorflow-cpu
