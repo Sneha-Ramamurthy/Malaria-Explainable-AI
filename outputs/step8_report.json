@@ -1,0 +1,167 @@
+{
+ "fusion_variant": "Grad-CAM + SHAP + CBAM",
+ "threshold": 0.14675025641918182,
+ "prediction_performance": {
+  "patch_test": {
+   "precision": 0.6060606060606061,
+   "recall": 0.5714285714285714,
+   "f1": 0.5882352941176471,
+   "auc": 0.8394088669950739,
+   "accuracy": 0.8444444444444444
+  },
+  "pixel_test": {
+   "iou": 0.24864798046911216,
+   "precision": 0.38916565900846434,
+   "recall": 0.40780537252914345
+  }
+ },
+ "patch_summary": {
+  "n_test": 180,
+  "n_predicted_high": 33,
+  "dominant_feature_among_predicted_high": {
+   "NDVI": 25,
+   "NDWI": 8
+  },
+  "mean_ndvi_contribution_pred_high": 2.1963360828883722,
+  "mean_ndwi_contribution_pred_high": 0.18643905319781465,
+  "support_pred_high": {
+   "strong": 8,
+   "partial": 23,
+   "weak": 2
+  },
+  "fraction_pred_high_where_deleting_top20_beats_random": 1.0
+ },
+ "scene": {
+  "2025-04": {
+   "month": "2025-04",
+   "test_px": 92222,
+   "predicted_high_share": 0.3291730823447767,
+   "mean_ndvi_contribution_pred_high": 1.9913835525512695,
+   "mean_ndwi_contribution_pred_high": 0.664016604423523,
+   "mean_ndvi_contribution_pred_low": -3.460364818572998,
+   "mean_ndwi_contribution_pred_low": 0.6955548524856567,
+   "mean_ndvi_pred_high": 0.2785629332065582,
+   "mean_ndvi_pred_low": 0.2312989979982376,
+   "mean_ndwi_pred_high": -0.3164905309677124,
+   "mean_ndwi_pred_low": -0.33012205362319946,
+   "fused_top20_precision_for_pred_high": 0.5257514216084485,
+   "fused_top20_recall_of_pred_high": 0.31979444609151103,
+   "consensus_2of3_share_of_test_land": 0.10924725119819566,
+   "consensus_2of3_precision_for_pred_high": 0.6083374689826303,
+   "dominant_feature_pred_high": "NDVI",
+   "text": "2025-04: 32.9% of the unseen land pixels are predicted HIGH malaria risk (P >= 0.147). Inside that region SHAP attributes, per 64x64 window, a mean +1.99 (NDVI) and +0.66 (NDWI) logit units (outside it: -3.46 / +0.70), so NDVI is the dominant driver. Predicted-high pixels have mean NDVI 0.28 vs 0.23 and mean NDWI -0.32 vs -0.33 elsewhere (decoded proxy values). The fused top-20% explanation region lies inside the predicted high-risk region 52.6% of the time (1.6x the 32.9% base rate) and covers 32.0% of the predicted high-risk pixels; 10.9% of the test land is supported by at least two of the three methods."
+  },
+  "2025-05": {
+   "month": "2025-05",
+   "test_px": 23989,
+   "predicted_high_share": 0.06323731710367252,
+   "mean_ndvi_contribution_pred_high": 11.668527603149414,
+   "mean_ndwi_contribution_pred_high": -9.065104484558105,
+   "mean_ndvi_contribution_pred_low": -0.462971031665802,
+   "mean_ndwi_contribution_pred_low": -2.826058864593506,
+   "mean_ndvi_pred_high": 0.3519372045993805,
+   "mean_ndvi_pred_low": 0.23973940312862396,
+   "mean_ndwi_pred_high": -0.3922760784626007,
+   "mean_ndwi_pred_low": -0.3402518928050995,
+   "fused_top20_precision_for_pred_high": 0.10954063604240283,
+   "fused_top20_recall_of_pred_high": 0.34739617666446937,
+   "consensus_2of3_share_of_test_land": 0.3202717912376506,
+   "consensus_2of3_precision_for_pred_high": 0.05792008330079396,
+   "dominant_feature_pred_high": "NDVI",
+   "text": "2025-05: 6.3% of the unseen land pixels are predicted HIGH malaria risk (P >= 0.147). Inside that region SHAP attributes, per 64x64 window, a mean +11.67 (NDVI) and -9.07 (NDWI) logit units (outside it: -0.46 / -2.83), so NDVI is the dominant driver. Predicted-high pixels have mean NDVI 0.35 vs 0.24 and mean NDWI -0.39 vs -0.34 elsewhere (decoded proxy values). The fused top-20% explanation region lies inside the predicted high-risk region 11.0% of the time (1.7x the 6.3% base rate) and covers 34.7% of the predicted high-risk pixels; 32.0% of the test land is supported by at least two of the three methods."
+  }
+ },
+ "examples": [
+  {
+   "idx": 405,
+   "tag": "TP",
+   "figure": "step8_patch_405_TP.png",
+   "month": "2025-04",
+   "level": "HIGH",
+   "prob": 0.9754135012626648,
+   "margin": 5.44098410573071,
+   "band": "strong",
+   "support": "strong",
+   "text": "Predicted malaria risk: HIGH  (P(high-risk) = 0.98, decision threshold 0.147; margin +5.44 logit -> strong).\nWhy: starting from a base of -3.10 logit, NDVI contributed +5.42 and NDWI +1.55 (SHAP); NDVI is the dominant driver and pushes the risk UP.\nWhere: the top-20% of the fused explanation is 1.7x vegetated pixels, 1.2x moist (high-NDWI) pixels, 0.6x pixels near water, 1.5x the high-risk zone relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU 0.25, Grad-CAM~CBAM 0.37, SHAP~CBAM 0.16 (chance 0.11) -> strong support (2/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +5.93 vs +1.57 for a random region of the same size."
+  },
+  {
+   "idx": 404,
+   "tag": "TP",
+   "figure": "step8_patch_404_TP.png",
+   "month": "2025-04",
+   "level": "HIGH",
+   "prob": 0.9369288682937622,
+   "margin": 4.458664282120617,
+   "band": "strong",
+   "support": "strong",
+   "text": "Predicted malaria risk: HIGH  (P(high-risk) = 0.94, decision threshold 0.147; margin +4.46 logit -> strong).\nWhy: starting from a base of -3.10 logit, NDVI contributed +3.29 and NDWI +0.97 (SHAP); NDVI is the dominant driver and pushes the risk UP.\nWhere: the top-20% of the fused explanation is 1.6x vegetated pixels, 1.6x moist (high-NDWI) pixels, 0.7x pixels near water, 1.7x the high-risk zone relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU 0.26, Grad-CAM~CBAM 0.36, SHAP~CBAM 0.17 (chance 0.11) -> strong support (2/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +5.72 vs +1.43 for a random region of the same size."
+  },
+  {
+   "idx": 410,
+   "tag": "TP",
+   "figure": "step8_patch_410_TP.png",
+   "month": "2025-04",
+   "level": "HIGH",
+   "prob": 0.9037820100784302,
+   "margin": 4.000291927649307,
+   "band": "strong",
+   "support": "partial",
+   "text": "Predicted malaria risk: HIGH  (P(high-risk) = 0.90, decision threshold 0.147; margin +4.00 logit -> strong).\nWhy: starting from a base of -3.10 logit, NDVI contributed +2.56 and NDWI +0.90 (SHAP); NDVI is the dominant driver and pushes the risk UP.\nWhere: the top-20% of the fused explanation is 1.7x vegetated pixels, 0.9x moist (high-NDWI) pixels, 1.0x pixels near water, 1.4x the high-risk zone relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU 0.28, Grad-CAM~CBAM 0.15, SHAP~CBAM 0.17 (chance 0.11) -> partial support (1/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +5.16 vs +1.27 for a random region of the same size."
+  },
+  {
+   "idx": 135,
+   "tag": "FN",
+   "figure": "step8_patch_135_FN.png",
+   "month": "2025-04",
+   "level": "LOW",
+   "prob": 0.05848081409931183,
+   "margin": -1.0184759083329178,
+   "band": "moderate",
+   "support": "partial",
+   "text": "Predicted malaria risk: LOW  (P(high-risk) = 0.06, decision threshold 0.147; margin -1.02 logit -> moderate).\nWhy: starting from a base of -3.10 logit, NDVI contributed +1.15 and NDWI +0.41 (SHAP); NDVI is the dominant driver and pushes the risk UP.\nWhere: the top-20% of the fused explanation is 2.8x vegetated pixels, 0.9x moist (high-NDWI) pixels, 1.5x pixels near water, 2.7x the high-risk zone relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU 0.32, Grad-CAM~CBAM 0.06, SHAP~CBAM 0.06 (chance 0.11) -> partial support (1/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +3.22 vs -0.17 for a random region of the same size."
+  },
+  {
+   "idx": 107,
+   "tag": "TN",
+   "figure": "step8_patch_107_TN.png",
+   "month": "2025-04",
+   "level": "LOW",
+   "prob": 3.3019336115103215e-05,
+   "margin": -8.558064124092407,
+   "band": "strong",
+   "support": "weak",
+   "text": "Predicted malaria risk: LOW  (P(high-risk) = 0.00, decision threshold 0.147; margin -8.56 logit -> strong).\nWhy: starting from a base of -3.10 logit, NDVI contributed -6.77 and NDWI +0.28 (SHAP); NDVI is the dominant driver and pushes the risk DOWN.\nWhere: the top-20% of the fused explanation is 1.5x vegetated pixels, 1.3x moist (high-NDWI) pixels, 1.3x pixels near water relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU 0.04, Grad-CAM~CBAM 0.00, SHAP~CBAM 0.09 (chance 0.11) -> weak support (0/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +1.57 vs +0.41 for a random region of the same size."
+  },
+  {
+   "idx": 108,
+   "tag": "TN",
+   "figure": "step8_patch_108_TN.png",
+   "month": "2025-04",
+   "level": "LOW",
+   "prob": 4.251752397976816e-05,
+   "margin": -8.305231638414813,
+   "band": "strong",
+   "support": "weak",
+   "text": "Predicted malaria risk: LOW  (P(high-risk) = 0.00, decision threshold 0.147; margin -8.31 logit -> strong).\nWhy: starting from a base of -3.10 logit, NDVI contributed -6.23 and NDWI -0.03 (SHAP); NDVI is the dominant driver and pushes the risk DOWN.\nWhere: the top-20% of the fused explanation is 1.4x moist (high-NDWI) pixels, 2.3x pixels near water relative to the patch average (1.0 = chance).\nAgreement: Grad-CAM~SHAP IoU n/a, Grad-CAM~CBAM n/a, SHAP~CBAM 0.10 (chance 0.11) -> weak support (0/3 method pairs agree).\nFidelity: deleting that region lowers the logit by +2.11 vs +0.24 for a random region of the same size."
+  }
+ ],
+ "caveats": [
+  "Risk labels are PROXY labels built in Step 2 (distance-to-water, moisture and vegetation), not observed malaria cases: the explanations show what the model uses to reproduce that proxy.",
+  "NDVI / NDWI are decoded from colour-rendered GeoTIFFs (decode.py): values are an ordered proxy, not calibrated indices.",
+  "Only two months (2025-04, 2025-05) and one region are available; test blocks are few, so per-method differences should be read as indicative.",
+  "The SHAP evidence map is computed from input gradients of the same logit that the deletion test perturbs, so it is favoured by that test; Grad-CAM and CBAM operate on a coarse 16x16 feature grid. CBAM attention is a learned gate, not an attribution of the output, and agrees only weakly with Grad-CAM, so it adds the least to the fusion."
+ ],
+ "step7_summary": {
+  "agreement_gradcam_shap_above_chance": true,
+  "agreement_cbam_with_others_above_chance": true,
+  "methods_with_positive_fidelity_gain": {
+   "gradcam": true,
+   "shap": true,
+   "cbam": true,
+   "fused_gc_shap": true,
+   "fused_all3": true
+  },
+  "best_by_deletion_gain_predicted_high": "shap",
+  "shap_stability_above_noise_floor": true
+ }
+}
