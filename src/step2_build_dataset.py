@@ -18,8 +18,24 @@ KM_PX = 0.765                # approx. km per down-sampled pixel at ~19 N
 D0_KM = 2.0                  # distance-decay scale for water proximity
 W = dict(prox=0.4, moist=0.3, veg=0.3)
 
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
 files = index_files()
-audit_months = [m for m in sorted({m for _, m in files})]
+if not files:
+    raise ValueError("No input data files found. Check the dataset folder.")
+
+audit_months = sorted({m for _, m in files})
+
+# Check the months required by this pipeline.
+for m in MONTHS:
+    missing = [
+        layer for layer in ("SCL", "NDVI", "NDWI")
+        if (layer, m) not in files
+    ]
+    if missing:
+        raise ValueError(
+            f"Month {m} is missing required input layers: {missing}"
+        )
 
 
 def scl_ds(month):
