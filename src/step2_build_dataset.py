@@ -44,7 +44,15 @@ def scl_ds(month):
 
 
 # ---------- 1. sea mask from a multi-month water composite ----------
-usable = [m for m in audit_months if scl_ds(m)[0].max() > 0]
+usable = [
+    m for m in audit_months
+    if ("SCL", m) in files and scl_ds(m)[0].max() > 0
+]
+
+if not usable:
+    raise ValueError(
+        "No usable SCL data found. Check the source images and decoding."
+    )
 water_cnt = valid_cnt = 0
 for m in usable:
     s, prof = scl_ds(m)
@@ -76,7 +84,22 @@ for m in MONTHS:
                     valid_risk=valid_risk, dist=dist)
 
 # ---------- 3. proxy risk score (knowledge-based pseudo-label) ----------
-pool = np.concatenate([scene[m]["ndwi"][scene[m]["valid_risk"]] for m in MONTHS])
+pools = [
+    scene[m]["ndwi"][scene[m]["valid_risk"]]
+    for m in MONTHS
+]
+pools = [p for p in pools if p.size > 0]
+
+if not pools:
+    raise ValueError(
+        "No valid land pixels available for risk calculation."
+    )
+
+pool = np.concatenate(pools)
+
+if not np.isfinite(pool).all():
+    raise ValueError("NDWI risk inputs contain NaN or infinite values.")
+
 p5, p95 = np.percentile(pool, [5, 95])
 for m in MONTHS:
     s = scene[m]
@@ -113,7 +136,11 @@ for m in MONTHS:
                     meta.append((MONTHS.index(m), r, c, br * (Wd // BLOCK) + bc))
 X = np.asarray(X, np.float16); M = np.asarray(M, np.uint8); R = np.asarray(R, np.float16)
 V = np.asarray(V, np.uint8); meta = np.asarray(meta, np.int32)
-frac = M.sum((1, 2)) / np.maximum(V.sum((1, 2)), 1)
+if len(X) == 0:
+    raise ValueError(
+        "No patches were generated. Check image dimensions, "
+        "valid-data coverage, PATCH, BLOCK and STRIDE."
+    )
 FRAC_THR = float(np.quantile(frac, POS_QUANTILE))
 y = (frac > FRAC_THR).astype(np.uint8)
 # random spatial-block split (same block -> same split in both months, so no leakage)
@@ -167,8 +194,15 @@ for row, m in enumerate(MONTHS):
 plt.tight_layout(); plt.savefig(OUT_DIR / "step2_decoded_and_risk.png", dpi=55)
 
 # patch examples
-idx = np.random.RandomState(1).choice(len(X), 6, replace=False)
-fig, ax = plt.subplots(3, 6, figsize=(15, 7.5))
+n_examples = min(6, len(X))
+idx = np.random.RandomState(1).choice(
+    len(X), n_examples, replace=False
+)
+fig, ax = plt.subplots(
+    3, n_examples,
+    figsize=(max(3, 2.5 * n_examples), 7.5),
+    squeeze=False
+)
 for j, i in enumerate(idx):
     ax[0, j].imshow(X[i][..., 0].astype(float), cmap="YlGn", vmin=0, vmax=.7); ax[0, j].set_title(f"NDVI  y={y[i]}", fontsize=9)
     ax[1, j].imshow(X[i][..., 1].astype(float), cmap="BrBG", vmin=-1, vmax=1); ax[1, j].set_title("NDWI", fontsize=9)
