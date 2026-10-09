@@ -440,7 +440,7 @@ for month in MONTHS:
         ndvi=data["ndvi"].astype(np.float16),
         ndwi=data["ndwi"].astype(np.float16),
         valid=data["valid_in"],
-        valid=data["valid_risk"]
+        valid=data["valid_risk"],
         water=data["water"],
         risk=data["risk"].astype(np.float16),
         hr=data["hr"],
