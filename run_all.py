@@ -107,6 +107,36 @@ STEPS = [
 ],
 }
 {
+“module”: “src.step6_cbam”,
+“title”: “Step 6 - CBAM attention analysis”,
+“needs”: [
+“models/mobilenetv2_cbam.keras”,
+“outputs/step2_patches.npz”,
+“outputs/step2_meta.json”,
+“outputs/step2_scene_2025-04.npz”,
+“outputs/step2_scene_2025-05.npz”,
+“outputs/step3_metrics.json”,
+“outputs/step3_scene_prob_2025-04.npz”,
+“outputs/step3_scene_prob_2025-05.npz”,
+“outputs/step4_gradcam_patches.npz”,
+“outputs/step4_scene_cam_2025-04.npz”,
+“outputs/step4_scene_cam_2025-05.npz”,
+],
+“makes”: [
+“outputs/step6_cbam_patches.npz”,
+“outputs/step6_metrics.json”,
+“outputs/step6_cbam_patches.png”,
+“outputs/step6_cbam_channels.png”,
+“outputs/step6_cbam_focus.png”,
+“outputs/step6_scene_cbam_2025-04.npz”,
+“outputs/step6_scene_cbam_2025-05.npz”,
+“outputs/step6_cbam_2025-04.tif”,
+“outputs/step6_cbam_2025-05.tif”,
+“outputs/step6_cbam_scene_2025-04.png”,
+“outputs/step6_cbam_scene_2025-05.png”,
+],
+},
+{
 “module”: “src.step7_validation_fusion”,
 “title”: “Step 7 - Validation and fusion”,
 “needs”: [
