@@ -1,5 +1,28 @@
+# Python virtual environments
 venv/
 .venv/
+
+# Python cache files
 __pycache__/
-*.pyc
+*.py[cod]
+
+# Environment variables and secrets
 .env
+.env.*
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Generated model files
+models/*.keras
+models/*.h5
+models/*.weights.h5
+
+# Generated outputs
+outputs/
+
+# Temporary files
+*.tmp
+.DS_Store
