@@ -160,7 +160,18 @@ def scene_windows(sc, ctx, stride=32):
         for c in range(0, ctx.W - P + 1, stride):
             if sv[r:r + P, c:c + P].mean() >= 0.6:
                 rs.append(r); cs.append(c); wins.append(img[r:r + P, c:c + P])
-    return np.array(rs), np.array(cs), np.stack(wins)
+    if not wins:
+    return (
+        np.array([], dtype=int),
+        np.array([], dtype=int),
+        np.empty((0, P, P, 2), dtype=np.float32),
+    )
+
+return (
+    np.asarray(rs, dtype=int),
+    np.asarray(cs, dtype=int),
+    np.stack(wins).astype(np.float32),
+)
 
 
 def stitch(rs, cs, maps, ctx):
