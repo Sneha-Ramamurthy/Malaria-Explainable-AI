@@ -1,185 +1,925 @@
-"""STEP 4 - Grad-CAM: patch heatmaps, scene heatmaps, focus analysis and sanity check.
-Run:  python -m src.step4_gradcam
+"""Step 4 - Grad-CAM heatmaps, focus analysis and sanity checks.
+
+Run:
+    python -m src.step4_gradcam
+
+Uses the trained model and Step 2/3 outputs.
+Grad-CAM explains model behaviour; it does not establish
+actual malaria transmission risk.
 """
-import os, json
+
+import os
+import json
+
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-import numpy as np, cv2, matplotlib
+
+import cv2
+import keras
+import numpy as np
+import matplotlib
+
 matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
-import keras, rasterio
+import rasterio
+
 from rasterio.transform import Affine
 from scipy.stats import wilcoxon, spearmanr
+
 from .config import OUT_DIR, ROOT
 from .gradcam import load_model, GradCAM
 from .models import build_model
 
-M3 = json.load(open(OUT_DIR / "step3_metrics.json")); M2 = json.load(open(OUT_DIR / "step2_meta.json"))
-THR, MONTHS, PATCH = M3["threshold"], M2["months"], M2["patch"]
-H, W = M2["shape"]
-model = load_model(ROOT / "models" / "mobilenetv2_cbam.keras")
+
+# ------------------------------------------------------------
+# 1. Configuration and input checks
+# ------------------------------------------------------------
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def load_json(path):
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Required file not found: {path}. "
+            "Run the earlier pipeline steps first."
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_npz(path):
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Required file not found: {path}. "
+            "Run the earlier pipeline steps first."
+        )
+    return np.load(path, allow_pickle=False)
+
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def safe_float(value):
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
+CACHE = env_flag("CACHE", False)
+
+M3 = load_json(OUT_DIR / "step3_metrics.json")
+M2 = load_json(OUT_DIR / "step2_meta.json")
+
+THR = float(M3["threshold"])
+MONTHS = M2["months"]
+PATCH = int(M2["patch"])
+H, W = map(int, M2["shape"])
+
+if not 0 < THR < 1:
+    raise ValueError(f"Invalid classification threshold: {THR}")
+
+model_path = ROOT / "models" / "mobilenetv2_cbam.keras"
+
+if not model_path.exists():
+    raise FileNotFoundError(
+        f"Trained model not found: {model_path}. "
+        "Run Step 3 before Step 4."
+    )
+
+model = load_model(model_path)
 gc = GradCAM(model, "last_conv")
 
-d = np.load(OUT_DIR / "step2_patches.npz")
-X, y, split, valid, hrm, meta = (d[k] for k in ("X", "y", "split", "valid", "mask", "meta"))
-X = X.astype("float32"); valid = valid.astype(bool); hrm = hrm.astype(bool)
-scene = {m: np.load(OUT_DIR / f"step2_scene_{m}.npz") for m in MONTHS}
+with load_npz(OUT_DIR / "step2_patches.npz") as d:
+    required = {"X", "y", "split", "valid", "mask", "meta"}
+    missing = required - set(d.files)
 
-# ------------------------------------------------------------------ 1. CAMs for every patch
-CACHE = bool(os.environ.get("CACHE"))
-if CACHE:
-    L = np.load(OUT_DIR / "step4_gradcam_patches.npz"); cam = L["cam"].astype("float32"); prob = L["prob"]; empty = L["empty"]
-    logit = np.log(prob / (1 - prob))
-else:
-    cam, logit, empty = gc(X); prob = 1 / (1 + np.exp(-logit))
+    if missing:
+        raise ValueError(
+            f"Step 2 patch file is missing arrays: {sorted(missing)}"
+        )
+
+    X = d["X"].astype("float32")
+    y = d["y"].astype("int32")
+    split = d["split"].astype("int32")
+    valid = d["valid"].astype(bool)
+    hrm = d["mask"].astype(bool)
+    meta = d["meta"].astype("int64")
+
+if X.ndim != 4 or X.shape[1:] != (PATCH, PATCH, 2):
+    raise ValueError(f"Unexpected patch array shape: {X.shape}")
+
+if not (
+    len(X) == len(y) == len(split) == len(valid)
+    == len(hrm) == len(meta)
+):
+    raise ValueError("Step 2 arrays have inconsistent lengths.")
+
+if valid.shape != X.shape[:3] or hrm.shape != X.shape[:3]:
+    raise ValueError("Patch masks do not match the patch dimensions.")
+
+if not np.isfinite(X).all():
+    raise ValueError("Patch inputs contain NaN or infinite values.")
+
+if not np.isin(split, [0, 1, 2]).all():
+    raise ValueError("Unexpected split labels; expected 0, 1 and 2.")
+
 te = split == 2
-print(f"CAMs computed: {len(cam)} patches | empty (no positive evidence): {empty.sum()} ({empty.mean():.1%})")
-if not CACHE:
-    np.savez_compressed(OUT_DIR / "step4_gradcam_patches.npz", cam=cam.astype(np.float16), prob=prob.astype(np.float32),
-                        empty=empty)
 
-# environmental masks per patch (from scene-level layers)
-water_dil = {m: cv2.dilate(scene[m]["water"].astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool) for m in MONTHS}  # ~2.3 km
-def sl(a, i): mi, r, c = meta[i, 0], meta[i, 1], meta[i, 2]; return a[r:r + PATCH, c:c + PATCH]
-near_water = np.stack([sl(water_dil[MONTHS[meta[i, 0]]], i) for i in range(len(X))])
-ndwi_p75 = float(np.percentile(X[split == 0][..., 1][valid[split == 0]], 75))
+if not te.any():
+    raise ValueError("No test patches were found in the Step 2 dataset.")
+
+scene = {}
+
+for month in MONTHS:
+    path = OUT_DIR / f"step2_scene_{month}.npz"
+    scene[month] = load_npz(path)
+
+    required_scene = {"ndvi", "ndwi", "water", "hr"}
+    missing = required_scene - set(scene[month].files)
+
+    if missing:
+        raise ValueError(
+            f"{path.name} is missing arrays: {sorted(missing)}"
+        )
+
+    if "valid_risk" in scene[month].files:
+        scene_valid = scene[month]["valid_risk"].astype(bool)
+    elif "valid" in scene[month].files:
+        scene_valid = scene[month]["valid"].astype(bool)
+    else:
+        raise ValueError(
+            f"{path.name} needs a valid or valid_risk mask."
+        )
+
+    if scene_valid.shape != (H, W):
+        raise ValueError(
+            f"Unexpected scene mask shape for {month}: "
+            f"{scene_valid.shape}"
+        )
+
+
+def get_scene_valid(month):
+    """Prefer the land/risk-validity mask introduced in Step 2."""
+    s = scene[month]
+
+    if "valid_risk" in s.files:
+        return s["valid_risk"].astype(bool)
+
+    return s["valid"].astype(bool)
+
+
+# ------------------------------------------------------------
+# 2. Grad-CAM for patches
+# ------------------------------------------------------------
+
+patch_cache = OUT_DIR / "step4_gradcam_patches.npz"
+use_patch_cache = CACHE and patch_cache.exists()
+
+if use_patch_cache:
+    with np.load(patch_cache, allow_pickle=False) as saved:
+        cam = saved["cam"].astype("float32")
+        prob = saved["prob"].astype("float32")
+        empty = saved["empty"].astype(bool)
+
+    if not (
+        len(cam) == len(X)
+        and len(prob) == len(X)
+        and len(empty) == len(X)
+    ):
+        raise ValueError(
+            "Cached Grad-CAM patch results do not match "
+            "the current Step 2 dataset. Rerun without CACHE."
+        )
+
+    if not np.isfinite(cam).all() or not np.isfinite(prob).all():
+        raise ValueError(
+            "Cached Grad-CAM results contain invalid values. "
+            "Rerun without CACHE."
+        )
+
+else:
+    cam, logits, empty = gc(X)
+    logits = np.asarray(logits, dtype="float32")
+
+    # Numerically stable sigmoid.
+    logits = np.clip(logits, -80, 80)
+    prob = (1.0 / (1.0 + np.exp(-logits))).astype("float32")
+
+    np.savez_compressed(
+        patch_cache,
+        cam=cam.astype("float16"),
+        prob=prob,
+        empty=empty,
+    )
+
+print(
+    f"Patch CAMs: {len(cam)} | "
+    f"empty CAMs: {int(empty.sum())} "
+    f"({empty.mean():.1%})"
+)
+
+
+# ------------------------------------------------------------
+# 3. Environmental focus analysis
+# ------------------------------------------------------------
+
+water_dil = {
+    month: cv2.dilate(
+        scene[month]["water"].astype("uint8"),
+        np.ones((7, 7), dtype="uint8"),
+    ).astype(bool)
+    for month in MONTHS
+}
+
+
+def patch_slice(array, index):
+    month_index, row, col = map(int, meta[index, :3])
+    return array[row:row + PATCH, col:col + PATCH]
+
+
+near_water = np.stack([
+    patch_slice(
+        water_dil[MONTHS[int(meta[i, 0])]],
+        i,
+    )
+    for i in range(len(X))
+])
+
+train_valid = valid[split == 0]
+train_ndwi = X[split == 0][..., 1][train_valid]
+
+if train_ndwi.size:
+    ndwi_p75 = float(np.percentile(train_ndwi, 75))
+else:
+    ndwi_p75 = 0.0
+    print("WARNING: no valid training pixels for NDWI percentile.")
+
 moist = (X[..., 1] >= ndwi_p75) & valid
 vegd = (X[..., 0] >= 0.35) & valid
 
-def focus_stats(camset, idx):
-    """Enrichment = share of top-20%-CAM pixels that are in a class / share of valid pixels in that class."""
-    rows = {k: [] for k in ("high_risk", "near_water", "moist", "vegetated", "invalid_mass")}
-    for i in idx:
-        c, v = camset[i], valid[i]
-        if v.sum() < 100 or c.max() <= 0: continue
-        top = (c >= np.quantile(c, 0.8)) & (c > 0) & v
-        if top.sum() < 20: continue
-        for k, m in (("high_risk", hrm[i]), ("near_water", near_water[i]), ("moist", moist[i]), ("vegetated", vegd[i])):
-            base = m[v].mean()
-            rows[k].append(m[top].mean() / base if base > 0.02 else np.nan)
-        rows["invalid_mass"].append((c[~v].sum() / c.sum()) / max((~v).mean(), 1e-6) if (~v).mean() > 0.02 else np.nan)
-    return {k: np.array(v, float) for k, v in rows.items()}
 
-def summarise(st):
-    out = {}
-    for k, a in st.items():
-        a = a[~np.isnan(a)]
-        if len(a) < 5: out[k] = None; continue
-        try: p = float(wilcoxon(a - 1).pvalue)
-        except ValueError: p = float("nan")
-        out[k] = dict(n=int(len(a)), median=float(np.median(a)), mean=float(a.mean()),
-                      share_above_1=float((a > 1).mean()), wilcoxon_p_vs_1=p)
-    return out
+def focus_stats(camset, indices):
+    """Measure CAM enrichment within selected environmental masks."""
+    rows = {
+        key: []
+        for key in (
+            "high_risk",
+            "near_water",
+            "moist",
+            "vegetated",
+            "invalid_mass",
+        )
+    }
 
-idx_all = np.where(te)[0]; idx_pos = np.where(te & (prob >= 1 / (1 + np.exp(-np.log(THR / (1 - THR))))))[0]
-st_all, st_pos = focus_stats(cam, idx_all), focus_stats(cam, idx_pos)
-S_all, S_pos = summarise(st_all), summarise(st_pos)
+    for i in indices:
+        c = np.asarray(camset[i], dtype="float32")
+        v = valid[i]
 
-# ------------------------------------------------------------------ 2. sanity check: randomised model
+        if v.sum() < 100 or not np.isfinite(c).all():
+            continue
+
+        valid_cam = c[v]
+
+        if valid_cam.size == 0 or valid_cam.max() <= 0:
+            continue
+
+        cutoff = np.quantile(valid_cam, 0.80)
+        top = (c >= cutoff) & (c > 0) & v
+
+        if top.sum() < 20:
+            continue
+
+        masks = (
+            ("high_risk", hrm[i]),
+            ("near_water", near_water[i]),
+            ("moist", moist[i]),
+            ("vegetated", vegd[i]),
+        )
+
+        for key, mask in masks:
+            baseline = float(mask[v].mean())
+            if baseline > 0.02:
+                rows[key].append(
+                    float(mask[top].mean() / baseline)
+                )
+
+        invalid_fraction = float((~v).mean())
+
+        if invalid_fraction > 0.02 and c.sum() > 0:
+            rows["invalid_mass"].append(
+                float(
+                    (c[~v].sum() / c.sum())
+                    / invalid_fraction
+                )
+            )
+
+    return {
+        key: np.asarray(values, dtype="float64")
+        for key, values in rows.items()
+    }
+
+
+def summarise(stats):
+    summary = {}
+
+    for key, values in stats.items():
+        values = values[np.isfinite(values)]
+
+        if len(values) < 5:
+            summary[key] = None
+            continue
+
+        try:
+            p_value = float(wilcoxon(values - 1).pvalue)
+        except (ValueError, FloatingPointError):
+            p_value = float("nan")
+
+        summary[key] = {
+            "n": int(len(values)),
+            "median": safe_float(np.median(values)),
+            "mean": safe_float(values.mean()),
+            "share_above_1": safe_float((values > 1).mean()),
+            "wilcoxon_p_vs_1": safe_float(p_value),
+        }
+
+    return summary
+
+
+idx_all = np.flatnonzero(te)
+idx_pos = np.flatnonzero(te & (prob >= THR))
+
+st_all = focus_stats(cam, idx_all)
+st_pos = focus_stats(cam, idx_pos)
+
+S_all = summarise(st_all)
+S_pos = summarise(st_pos)
+
+
+# ------------------------------------------------------------
+# 4. Randomised-model sanity check
+# ------------------------------------------------------------
+
 keras.utils.set_random_seed(123)
-rnd = build_model(M3["norm_mean"], M3["norm_var"], **M3["model_config"])
-cam_r, _, _ = GradCAM(rnd, "last_conv")(X[te])
-st_rnd = focus_stats(dict(zip(idx_all, cam_r)), idx_all)
+
+rnd = build_model(
+    M3["norm_mean"],
+    M3["norm_var"],
+    **M3["model_config"],
+)
+
+if rnd.output_shape[-1] != 1:
+    raise ValueError("Randomised model has an unexpected output shape.")
+
+cam_r, _, _ = gc(X[te]) if False else (None, None, None)
+
+# Use the randomised model, not the trained GradCAM instance.
+rnd_gc = GradCAM(rnd, "last_conv")
+cam_r, _, _ = rnd_gc(X[te], batch=128)
+
+st_rnd = focus_stats(
+    dict(zip(idx_all, cam_r)),
+    idx_all,
+)
+
 S_rnd = summarise(st_rnd)
-rho = []
-for a, b, i in zip(cam[te], cam_r, idx_all):
-    v = valid[i]
-    if a.max() > 0 and b.max() > 0 and v.sum() > 100 and a[v].std() > 0 and b[v].std() > 0:
-        rho.append(spearmanr(a[v], b[v])[0])
-rho = float(np.nanmean(rho))
-print(f"\nFOCUS (test patches predicted high-risk, n={len(idx_pos)}); enrichment >1 = model looks at it more than chance")
-for k, v in S_pos.items(): print(f"  {k:13s}", None if v is None else {a: round(b, 3) for a, b in v.items()})
-print("SANITY  trained vs randomised-model Grad-CAM: mean Spearman rho =", round(rho, 3))
-print("        high-risk enrichment median  trained", None if S_all['high_risk'] is None else round(S_all['high_risk']['median'], 2),
-      "| randomised", None if S_rnd['high_risk'] is None else round(S_rnd['high_risk']['median'], 2))
 
-# ------------------------------------------------------------------ 3. scene-level Grad-CAM (sliding window)
-region = {m: np.zeros((H, W), np.uint8) for m in MONTHS}
+correlations = []
+
+for trained_cam, random_cam, index in zip(cam[te], cam_r, idx_all):
+    v = valid[index]
+
+    if (
+        v.sum() > 100
+        and trained_cam[v].std() > 0
+        and random_cam[v].std() > 0
+    ):
+        result = spearmanr(trained_cam[v], random_cam[v]).statistic
+
+        if np.isfinite(result):
+            correlations.append(float(result))
+
+rho = float(np.mean(correlations)) if correlations else None
+
+print("\nFOCUS: test patches predicted high-risk")
+print("Enrichment > 1 means the CAM overlaps a class more than its baseline share.")
+
+for key, value in S_pos.items():
+    print(
+        f"  {key:13s}",
+        None if value is None else value,
+    )
+
+print("SANITY: trained vs randomised CAM mean Spearman rho =", rho)
+
+
+# ------------------------------------------------------------
+# 5. Scene-level Grad-CAM
+# ------------------------------------------------------------
+
+region = {
+    month: np.zeros((H, W), dtype="uint8")
+    for month in MONTHS
+}
+
 for i in range(len(X)):
-    mm = MONTHS[meta[i, 0]]; r, c = meta[i, 1], meta[i, 2]
-    region[mm][r:r + PATCH, c:c + PATCH] = np.maximum(region[mm][r:r + PATCH, c:c + PATCH], split[i] + 1)
-tr = M2["transform"]; affine = Affine(*tr); scene_cam, scene_stats = {}, {}
-for m in MONTHS:
-    s = scene[m]; sv = s["valid"]
-    cf = OUT_DIR / f"step4_scene_cam_{m}.npz"
-    if CACHE and cf.exists():
-        sc = np.load(cf)["cam"].astype("float32"); scene_cam[m] = sc
+    month_index, row, col = map(int, meta[i, :3])
+
+    if month_index < 0 or month_index >= len(MONTHS):
+        continue
+
+    month = MONTHS[month_index]
+    row_end = min(row + PATCH, H)
+    col_end = min(col + PATCH, W)
+
+    region[month][row:row_end, col:col_end] = np.maximum(
+        region[month][row:row_end, col:col_end],
+        split[i] + 1,
+    )
+
+affine = Affine(*M2["transform"])
+scene_cam = {}
+scene_stats = {}
+
+
+for month in MONTHS:
+    s = scene[month]
+    sv = get_scene_valid(month)
+
+    cache_path = OUT_DIR / f"step4_scene_cam_{month}.npz"
+    tif_path = OUT_DIR / f"step4_gradcam_{month}.tif"
+
+    use_cache = CACHE and cache_path.exists()
+
+    if use_cache:
+        with np.load(cache_path, allow_pickle=False) as saved:
+            sc = saved["cam"].astype("float32")
+
+        if sc.shape != (H, W):
+            raise ValueError(
+                f"Cached scene CAM has the wrong shape for {month}."
+            )
+
     else:
-        img = np.stack([s["ndvi"], s["ndwi"]], -1).astype("float32") * sv[..., None]
-        rs, cs, wins = [], [], []
-        for r in range(0, H - PATCH + 1, 32):
-            for c in range(0, W - PATCH + 1, 32):
-                if sv[r:r + PATCH, c:c + PATCH].mean() >= 0.6:
-                    rs.append(r); cs.append(c); wins.append(img[r:r + PATCH, c:c + PATCH])
-        cw, _, _ = gc(np.stack(wins), batch=256)
-        acc = np.zeros((H, W), np.float32); cnt = np.zeros((H, W), np.float32)
-        for r, c, k in zip(rs, cs, cw): acc[r:r + PATCH, c:c + PATCH] += k; cnt[r:r + PATCH, c:c + PATCH] += 1
-        sc = np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan).astype(np.float32); scene_cam[m] = sc
-        np.savez_compressed(OUT_DIR / f"step4_scene_cam_{m}.npz", cam=sc.astype(np.float16))
-        with rasterio.open(OUT_DIR / f"step4_gradcam_{m}.tif", "w", driver="GTiff", height=H, width=W, count=1,
-                           dtype="float32", crs=M2["crs"], transform=affine, nodata=-9999) as dst:
-            dst.write(np.nan_to_num(sc, nan=-9999).astype("float32"), 1)      # open in QGIS
+        img = np.stack(
+            [
+                s["ndvi"].astype("float32"),
+                s["ndwi"].astype("float32"),
+            ],
+            axis=-1,
+        )
 
-    prb = np.load(OUT_DIR / f"step3_scene_prob_{m}.npz")["prob"].astype("float32")
-    ok = sv & ~s["water"] & ~np.isnan(sc) & (region[m] == 3)              # unseen (test) blocks only
-    top = ok & (sc >= np.nanquantile(sc[ok], 0.8)) if ok.sum() > 100 else ok
-    pred = np.nan_to_num(prb, nan=0) >= THR
-    scene_stats[m] = dict(test_px=int(ok.sum()),
-        top20cam_inside_pred_highrisk=float(pred[top].mean()) if top.sum() else None,
-        pred_highrisk_share_of_test_land=float(pred[ok].mean()) if ok.sum() else None,
-        top20cam_inside_proxy_highrisk=float(s["hr"][top].mean()) if top.sum() else None,
-        proxy_highrisk_share_of_test_land=float(s["hr"][ok].mean()) if ok.sum() else None,
-        spearman_cam_vs_prob=float(spearmanr(sc[ok], prb[ok])[0]) if ok.sum() > 100 else None)
-    print(m, {k: (round(v, 3) if isinstance(v, float) else v) for k, v in scene_stats[m].items()})
+        img[~sv] = 0.0
 
-json.dump(dict(layer="last_conv", threshold=THR, empty_cam_fraction=float(empty.mean()),
-               focus_test_predicted_high=S_pos, focus_test_all=S_all, focus_randomised_model=S_rnd,
-               sanity_spearman_trained_vs_random=rho, scene=scene_stats),
-          open(OUT_DIR / "step4_metrics.json", "w"), indent=1)
+        rows, cols, windows = [], [], []
 
-# ------------------------------------------------------------------ 4. figures
-def heat(ax, base, c, cmap, vmin, vmax, title):
-    ax.imshow(base, cmap=cmap, vmin=vmin, vmax=vmax); ax.imshow(np.ma.masked_less(c, 0.15), cmap="jet", alpha=0.55, vmin=0, vmax=1)
-    ax.set_title(title, fontsize=8); ax.axis("off")
+        # Include the final edge-aligned window where necessary.
+        row_starts = list(range(0, max(H - PATCH + 1, 1), 32))
+        col_starts = list(range(0, max(W - PATCH + 1, 1), 32))
 
-tp = idx_all[(y[idx_all] == 1) & (prob[idx_all] >= prob[te].mean())]; tp = tp[np.argsort(-prob[tp])][:5]
-fn = idx_all[(y[idx_all] == 1) & ~np.isin(idx_all, tp)][:1]
-tn = idx_all[(y[idx_all] == 0)]; tn = tn[np.argsort(prob[tn])][:2]
-sel = np.concatenate([tp, fn, tn])
-fig, ax = plt.subplots(5, len(sel), figsize=(2.3 * len(sel), 12))
-for j, i in enumerate(sel):
-    v = valid[i]; t = f"p={prob[i]:.2f}  true={'HIGH' if y[i] else 'low'}"
-    ax[0, j].imshow(np.ma.masked_where(~v, X[i][..., 0]), cmap="YlGn", vmin=0, vmax=.7); ax[0, j].set_title("NDVI\n" + t, fontsize=8)
-    ax[1, j].imshow(np.ma.masked_where(~v, X[i][..., 1]), cmap="BrBG", vmin=-1, vmax=1); ax[1, j].set_title("NDWI", fontsize=8)
-    heat(ax[2, j], np.ma.masked_where(~v, X[i][..., 0]), cam[i], "YlGn", 0, .7, "Grad-CAM on NDVI")
-    heat(ax[3, j], np.ma.masked_where(~v, X[i][..., 1]), cam[i], "BrBG", -1, 1, "Grad-CAM on NDWI")
-    ax[4, j].imshow(hrm[i], cmap="Reds", vmin=0, vmax=1.5)
-    if cam[i].max() > 0: ax[4, j].contour(cam[i], levels=[0.5], colors="cyan", linewidths=1.2)
-    ax[4, j].set_title("proxy high-risk mask\n+ CAM>0.5 (cyan)", fontsize=8)
-    for a in ax[:, j]: a.axis("off")
-plt.tight_layout(); plt.savefig(OUT_DIR / "step4_gradcam_patches.png", dpi=75); plt.close()
+        if H >= PATCH and (not row_starts or row_starts[-1] != H - PATCH):
+            row_starts.append(H - PATCH)
 
-for m in MONTHS:
-    s = scene[m]; sv = s["valid"]; prb = np.load(OUT_DIR / f"step3_scene_prob_{m}.npz")["prob"].astype("float32")
-    sc = scene_cam[m]; pred = np.nan_to_num(prb, nan=0) >= THR
-    fig, ax = plt.subplots(1, 3, figsize=(21, 6.5))
-    heat(ax[0], np.ma.masked_where(~sv, s["ndvi"].astype("float32")), np.nan_to_num(sc), "YlGn", 0, .7, f"{m}  Grad-CAM over NDVI")
-    heat(ax[1], np.ma.masked_where(~sv, s["ndwi"].astype("float32")), np.nan_to_num(sc), "BrBG", -1, 1, "Grad-CAM over NDWI")
-    ax[2].imshow(np.ma.masked_invalid(sc), cmap="magma", vmin=0, vmax=1)
-    ax[2].contour(pred & sv & ~s["water"], levels=[0.5], colors="cyan", linewidths=0.6)
-    ax[2].contour(s["hr"] & sv, levels=[0.5], colors="lime", linewidths=0.4)
-    ax[2].set_title("Grad-CAM (mean of windows)  cyan = predicted high-risk, green = proxy high-risk", fontsize=9)
-    for a in ax: a.axis("off")
-    plt.tight_layout(); plt.savefig(OUT_DIR / f"step4_gradcam_scene_{m}.png", dpi=55); plt.close()
+        if W >= PATCH and (not col_starts or col_starts[-1] != W - PATCH):
+            col_starts.append(W - PATCH)
 
-names = ["high_risk", "near_water", "moist", "vegetated"]; lab = ["proxy\nhigh-risk", "near\nwater", "moist\n(NDWI top 25%)", "vegetated\n(NDVI ≥ 0.35)"]
-fig, ax = plt.subplots(1, 2, figsize=(13, 4.5))
-xs = np.arange(4); wd = .38
-med = lambda S: [S[k]["median"] if S.get(k) else np.nan for k in names]
-ax[0].bar(xs - wd / 2, med(S_all), wd, label="trained model"); ax[0].bar(xs + wd / 2, med(S_rnd), wd, label="randomised model")
-ax[0].axhline(1, color="k", ls="--"); ax[0].set_xticks(xs, lab); ax[0].set_ylabel("median enrichment (1 = chance)")
-ax[0].set_title("Where does the top-20% of Grad-CAM fall? (test patches)"); ax[0].legend()
-ax[1].hist(st_all["high_risk"][~np.isnan(st_all["high_risk"])], bins=25, alpha=.7, label="trained")
-ax[1].hist(st_rnd["high_risk"][~np.isnan(st_rnd["high_risk"])], bins=25, alpha=.5, label="randomised")
-ax[1].axvline(1, color="k", ls="--"); ax[1].set_title("High-risk enrichment per patch"); ax[1].legend()
-plt.tight_layout(); plt.savefig(OUT_DIR / "step4_focus_analysis.png", dpi=80); plt.close()
-print("done")
+        for row in row_starts:
+            for col in col_starts:
+                window_valid = sv[
+                    row:row + PATCH,
+                    col:col + PATCH,
+                ]
+
+                if window_valid.shape != (PATCH, PATCH):
+                    continue
+
+                if window_valid.mean() < 0.60:
+                    continue
+
+                rows.append(row)
+                cols.append(col)
+                windows.append(
+                    img[row:row + PATCH, col:col + PATCH]
+                )
+
+        acc = np.zeros((H, W), dtype="float32")
+        cnt = np.zeros((H, W), dtype="float32")
+
+        if windows:
+            windows = np.stack(windows).astype("float32")
+            window_cams, _, _ = gc(windows, batch=128)
+
+            for row, col, window_cam in zip(rows, cols, window_cams):
+                acc[
+                    row:row + PATCH,
+                    col:col + PATCH,
+                ] += window_cam
+
+                cnt[
+                    row:row + PATCH,
+                    col:col + PATCH,
+                ] += 1
+
+            sc = np.full((H, W), np.nan, dtype="float32")
+            covered = cnt > 0
+            sc[covered] = acc[covered] / cnt[covered]
+
+        else:
+            print(
+                f"WARNING: no valid sliding windows for {month}; "
+                "scene CAM will contain only NaNs."
+            )
+            sc = np.full((H, W), np.nan, dtype="float32")
+
+        np.savez_compressed(
+            cache_path,
+            cam=sc.astype("float16"),
+        )
+
+        with rasterio.open(
+            tif_path,
+            "w",
+            driver="GTiff",
+            height=H,
+            width=W,
+            count=1,
+            dtype="float32",
+            crs=M2["crs"],
+            transform=affine,
+            nodata=-9999,
+        ) as dst:
+            dst.write(
+                np.nan_to_num(
+                    sc,
+                    nan=-9999.0,
+                    posinf=-9999.0,
+                    neginf=-9999.0,
+                ).astype("float32"),
+                1,
+            )
+
+    scene_cam[month] = sc
+
+    probability_path = OUT_DIR / f"step3_scene_prob_{month}.npz"
+
+    with load_npz(probability_path) as saved:
+        prb = saved["prob"].astype("float32")
+
+    if prb.shape != (H, W):
+        raise ValueError(
+            f"Step 3 probability map has the wrong shape for {month}."
+        )
+
+    ok = (
+        sv
+        & ~s["water"].astype(bool)
+        & np.isfinite(sc)
+        & (region[month] == 3)
+    )
+
+    if ok.sum() > 100:
+        top_cutoff = np.quantile(sc[ok], 0.80)
+        top = ok & (sc >= top_cutoff)
+    else:
+        top = np.zeros((H, W), dtype=bool)
+
+    pred = np.isfinite(prb) & (prb >= THR)
+
+    cam_prob_corr = None
+
+    if ok.sum() > 100 and np.std(sc[ok]) > 0 and np.std(prb[ok]) > 0:
+        cam_prob_corr = safe_float(
+            spearmanr(sc[ok], prb[ok]).statistic
+        )
+
+    scene_stats[month] = {
+        "test_px": int(ok.sum()),
+        "top20cam_inside_pred_highrisk": (
+            safe_float(pred[top].mean()) if top.any() else None
+        ),
+        "pred_highrisk_share_of_test_land": (
+            safe_float(pred[ok].mean()) if ok.any() else None
+        ),
+        "top20cam_inside_proxy_highrisk": (
+            safe_float(s["hr"][top].mean()) if top.any() else None
+        ),
+        "proxy_highrisk_share_of_test_land": (
+            safe_float(s["hr"][ok].mean()) if ok.any() else None
+        ),
+        "spearman_cam_vs_prob": cam_prob_corr,
+    }
+
+    print(month, scene_stats[month])
+
+
+# ------------------------------------------------------------
+# 6. Save metrics
+# ------------------------------------------------------------
+
+metrics = {
+    "layer": "last_conv",
+    "threshold": THR,
+    "empty_cam_fraction": safe_float(empty.mean()),
+    "focus_test_predicted_high": S_pos,
+    "focus_test_all": S_all,
+    "focus_randomised_model": S_rnd,
+    "sanity_spearman_trained_vs_random": rho,
+    "scene": scene_stats,
+}
+
+with open(
+    OUT_DIR / "step4_metrics.json",
+    "w",
+    encoding="utf-8",
+) as f:
+    json.dump(metrics, f, indent=2, allow_nan=False)
+
+
+# ------------------------------------------------------------
+# 7. Patch figures
+# ------------------------------------------------------------
+
+positive = idx_all[
+    (y[idx_all] == 1)
+    & (prob[idx_all] >= THR)
+]
+
+positive = positive[np.argsort(-prob[positive])][:5]
+
+negative = idx_all[y[idx_all] == 0]
+negative = negative[np.argsort(prob[negative])][:2]
+
+false_negative = idx_all[
+    (y[idx_all] == 1)
+    & (prob[idx_all] < THR)
+][:1]
+
+selected = np.concatenate(
+    [positive, false_negative, negative]
+)
+
+if len(selected) == 0:
+    selected = idx_all[np.argsort(-prob[idx_all])[:1]]
+
+fig, axes = plt.subplots(
+    5,
+    len(selected),
+    figsize=(2.5 * len(selected), 12),
+    squeeze=False,
+)
+
+def heat(ax, base, cam_map, cmap, vmin, vmax, title):
+    ax.imshow(base, cmap=cmap, vmin=vmin, vmax=vmax)
+
+    overlay = np.ma.masked_where(
+        ~np.isfinite(cam_map) | (cam_map < 0.15),
+        cam_map,
+    )
+
+    ax.imshow(
+        overlay,
+        cmap="jet",
+        alpha=0.55,
+        vmin=0,
+        vmax=1,
+    )
+
+    ax.set_title(title, fontsize=8)
+    ax.axis("off")
+
+
+for col, i in enumerate(selected):
+    v = valid[i]
+
+    ndvi = np.ma.masked_where(~v, X[i, ..., 0])
+    ndwi = np.ma.masked_where(~v, X[i, ..., 1])
+
+    title = (
+        f"p={prob[i]:.2f} | "
+        f"true={'HIGH' if y[i] else 'low'}"
+    )
+
+    axes[0, col].imshow(ndvi, cmap="YlGn", vmin=0, vmax=0.7)
+    axes[0, col].set_title("NDVI\n" + title, fontsize=8)
+
+    axes[1, col].imshow(ndwi, cmap="BrBG", vmin=-1, vmax=1)
+    axes[1, col].set_title("NDWI", fontsize=8)
+
+    heat(
+        axes[2, col],
+        ndvi,
+        cam[i],
+        "YlGn",
+        0,
+        0.7,
+        "Grad-CAM over NDVI",
+    )
+
+    heat(
+        axes[3, col],
+        ndwi,
+        cam[i],
+        "BrBG",
+        -1,
+        1,
+        "Grad-CAM over NDWI",
+    )
+
+    axes[4, col].imshow(hrm[i], cmap="Reds", vmin=0, vmax=1)
+
+    if cam[i].max() > 0:
+        axes[4, col].contour(
+            cam[i],
+            levels=[0.5],
+            colors="cyan",
+            linewidths=1.2,
+        )
+
+    axes[4, col].set_title(
+        "Proxy high-risk mask\n+ CAM 0.5 contour",
+        fontsize=8,
+    )
+
+    for row in range(5):
+        axes[row, col].axis("off")
+
+plt.tight_layout()
+plt.savefig(
+    OUT_DIR / "step4_gradcam_patches.png",
+    dpi=75,
+)
+plt.close()
+
+
+# ------------------------------------------------------------
+# 8. Scene figures
+# ------------------------------------------------------------
+
+for month in MONTHS:
+    s = scene[month]
+    sv = get_scene_valid(month)
+    sc = scene_cam[month]
+
+    with load_npz(OUT_DIR / f"step3_scene_prob_{month}.npz") as saved:
+        prb = saved["prob"].astype("float32")
+
+    pred = np.isfinite(prb) & (prb >= THR)
+
+    fig, axes = plt.subplots(1, 3, figsize=(21, 6.5))
+
+    heat(
+        axes[0],
+        np.ma.masked_where(~sv, s["ndvi"].astype("float32")),
+        np.nan_to_num(sc, nan=0.0),
+        "YlGn",
+        0,
+        0.7,
+        f"{month}: Grad-CAM over NDVI",
+    )
+
+    heat(
+        axes[1],
+        np.ma.masked_where(~sv, s["ndwi"].astype("float32")),
+        np.nan_to_num(sc, nan=0.0),
+        "BrBG",
+        -1,
+        1,
+        f"{month}: Grad-CAM over NDWI",
+    )
+
+    axes[2].imshow(
+        np.ma.masked_invalid(sc),
+        cmap="magma",
+        vmin=0,
+        vmax=1,
+    )
+
+    pred_contour = pred & sv & ~s["water"].astype(bool)
+
+    if pred_contour.any() and pred_contour.all() is False:
+        axes[2].contour(
+            pred_contour.astype("float32"),
+            levels=[0.5],
+            colors="cyan",
+            linewidths=0.6,
+        )
+
+    proxy = s["hr"].astype(bool) & sv
+
+    if proxy.any() and not proxy.all():
+        axes[2].contour(
+            proxy.astype("float32"),
+            levels=[0.5],
+            colors="lime",
+            linewidths=0.4,
+        )
+
+    axes[2].set_title(
+        "Scene CAM: cyan = predicted high-risk; "
+        "green = proxy high-risk",
+        fontsize=9,
+    )
+
+    for ax in axes:
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig(
+        OUT_DIR / f"step4_gradcam_scene_{month}.png",
+        dpi=55,
+    )
+    plt.close()
+
+
+# ------------------------------------------------------------
+# 9. Focus comparison figures
+# ------------------------------------------------------------
+
+names = ["high_risk", "near_water", "moist", "vegetated"]
+
+labels = [
+    "proxy\nhigh-risk",
+    "near\nwater",
+    "moist\n(NDWI top 25%)",
+    "vegetated\n(NDVI >= 0.35)",
+]
+
+
+def medians(summary):
+    return [
+        (
+            summary[key]["median"]
+            if summary.get(key) is not None
+            else np.nan
+        )
+        for key in names
+    ]
+
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+
+x = np.arange(len(names))
+width = 0.38
+
+axes[0].bar(
+    x - width / 2,
+    medians(S_all),
+    width,
+    label="trained model",
+)
+
+axes[0].bar(
+    x + width / 2,
+    medians(S_rnd),
+    width,
+    label="randomised model",
+)
+
+axes[0].axhline(1, color="black", linestyle="--")
+axes[0].set_xticks(x, labels)
+axes[0].set_ylabel("Median enrichment (1 = baseline)")
+axes[0].set_title("Where does the top 20% of Grad-CAM fall?")
+axes[0].legend()
+
+trained_values = st_all["high_risk"]
+random_values = st_rnd["high_risk"]
+
+axes[1].hist(
+    trained_values[np.isfinite(trained_values)],
+    bins=25,
+    alpha=0.7,
+    label="trained",
+)
+
+axes[1].hist(
+    random_values[np.isfinite(random_values)],
+    bins=25,
+    alpha=0.5,
+    label="randomised",
+)
+
+axes[1].axvline(1, color="black", linestyle="--")
+axes[1].set_title("High-risk enrichment per test patch")
+axes[1].legend()
+
+plt.tight_layout()
+plt.savefig(
+    OUT_DIR / "step4_focus_analysis.png",
+    dpi=80,
+)
+plt.close()
+
+
+# ------------------------------------------------------------
+# 10. Completion
+# ------------------------------------------------------------
+
+print("\nStep 4 finished.")
+print("Metrics:", OUT_DIR / "step4_metrics.json")
+print("Patch figure:", OUT_DIR / "step4_gradcam_patches.png")
+print("Focus figure:", OUT_DIR / "step4_focus_analysis.png")
+print("Scene figures and GeoTIFFs saved for each month.")
+print("Reminder: proxy-risk explanations are not clinical or")
+print("epidemiological validation of malaria transmission.")
