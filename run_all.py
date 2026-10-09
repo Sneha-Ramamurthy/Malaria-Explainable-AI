@@ -27,9 +27,30 @@ STEPS = {
         ["outputs/step4_metrics.json"]),
     # Steps 5-8 live in your own src/ folder; their inputs/outputs are not checked here.
     5: ("src.step5_shap",          "SHAP explanations",             [], []),
+    ["models/mobilenetv2_cbam.keras",
+     "outputs/step3_scene_prob_2025-04.npz",
+     "outputs/step4_gradcam_patches.npz"],
+    ["outputs/step5_shap_patches.npz",
+     "outputs/step5_metrics.json"]),
     6: ("src.step6_cbam",          "CBAM attention analysis",       [], []),
+    ["models/mobilenetv2_cbam.keras",
+     "outputs/step4_gradcam_patches.npz"],
+    ["outputs/step6_cbam_patches.npz",
+     "outputs/step6_metrics.json"]),
     7: ("src.step7_validation",    "Validation & fusion",           [], []),
+    ["outputs/step4_gradcam_patches.npz",
+     "outputs/step5_shap_patches.npz",
+     "outputs/step6_cbam_patches.npz"],
+    ["outputs/step7_validation_patches.npz",
+     "outputs/step7_metrics.json"]),
+
     8: ("src.step8_final_output",  "Final integrated output",       [], []),
+    ["outputs/step5_shap_patches.npz",
+     "outputs/step6_cbam_patches.npz",
+     "outputs/step7_validation_patches.npz",
+     "outputs/step7_metrics.json"],
+    ["outputs/step8_explanations_test.csv",
+     "outputs/step8_report.json"]),
 }
 # validation_core.py and xai_utils.py are helper modules imported by the steps - they are not run directly.
 
