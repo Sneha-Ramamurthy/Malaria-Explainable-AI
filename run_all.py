@@ -95,10 +95,26 @@ def main():
         mod, title, _, _ = STEPS[s]
         print(f"\n{'=' * 70}\nSTEP {s}: {title}   (python -m {mod})\n{'=' * 70}", flush=True)
         t0 = time.time()
-        rc = subprocess.run([sys.executable, "-m", mod], cwd=ROOT, env=env).returncode
-        results.append((s, title, rc, time.time() - t0))
-        if rc != 0:
-            print(f"\nStep {s} failed (exit code {rc}); stopping."); break
+        try:
+    result = subprocess.run(
+        [sys.executable, "-m", mod],
+        cwd=ROOT,
+        env=env,
+        check=False
+    )
+    rc = result.returncode
+except OSError as exc:
+    print(f"\nCould not start Step {s}: {exc}")
+    rc = 1
+
+results.append((s, title, rc, time.time() - t0))
+
+if rc != 0:
+    print(f"\nERROR: Step {s} — {title} failed.")
+    print(f"Exit code: {rc}")
+    print("Check the error messages immediately above this summary.")
+    print("Fix this step before running later steps.")
+    break
 
     print(f"\n{'=' * 70}\nSUMMARY\n{'=' * 70}")
     for s, title, rc, dt in results:
