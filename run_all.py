@@ -50,19 +50,32 @@ STEPS = [
 ],
 },
 {
+
 “module”: “src.step4_gradcam”,
 “title”: “Step 4 - Grad-CAM explanations”,
 “needs”: [
 “models/mobilenetv2_cbam.keras”,
+“outputs/step2_meta.json”,
+“outputs/step2_patches.npz”,
+“outputs/step2_scene_2025-04.npz”,
+“outputs/step2_scene_2025-05.npz”,
 “outputs/step3_metrics.json”,
 “outputs/step3_scene_prob_2025-04.npz”,
+“outputs/step3_scene_prob_2025-05.npz”,
 ],
 “makes”: [
 “outputs/step4_metrics.json”,
 “outputs/step4_gradcam_patches.npz”,
+“outputs/step4_gradcam_patches.png”,
+“outputs/step4_focus_analysis.png”,
+“outputs/step4_scene_cam_2025-04.npz”,
+“outputs/step4_scene_cam_2025-05.npz”,
+“outputs/step4_gradcam_2025-04.tif”,
+“outputs/step4_gradcam_2025-05.tif”,
+“outputs/step4_gradcam_scene_2025-04.png”,
+“outputs/step4_gradcam_scene_2025-05.png”,
 ],
-},
-{
+}
 “module”: “src.step5_shap”,
 “title”: “Step 5 - SHAP explanations”,
 “needs”: [
