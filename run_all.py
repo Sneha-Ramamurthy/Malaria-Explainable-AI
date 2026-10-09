@@ -76,30 +76,36 @@ STEPS = [
 “outputs/step4_gradcam_scene_2025-05.png”,
 ],
 }
+{
 “module”: “src.step5_shap”,
 “title”: “Step 5 - SHAP explanations”,
 “needs”: [
 “models/mobilenetv2_cbam.keras”,
+“outputs/step2_patches.npz”,
+“outputs/step2_meta.json”,
+“outputs/step2_scene_2025-04.npz”,
+“outputs/step2_scene_2025-05.npz”,
+“outputs/step3_metrics.json”,
 “outputs/step3_scene_prob_2025-04.npz”,
+“outputs/step3_scene_prob_2025-05.npz”,
 “outputs/step4_gradcam_patches.npz”,
+“outputs/step4_scene_cam_2025-04.npz”,
+“outputs/step4_scene_cam_2025-05.npz”,
 ],
 “makes”: [
 “outputs/step5_shap_patches.npz”,
 “outputs/step5_metrics.json”,
+“outputs/step5_shap_patches.png”,
+“outputs/step5_shap_flow.png”,
+“outputs/step5_shap_global.png”,
+“outputs/step5_scene_shap_2025-04.npz”,
+“outputs/step5_scene_shap_2025-05.npz”,
+“outputs/step5_shap_2025-04.tif”,
+“outputs/step5_shap_2025-05.tif”,
+“outputs/step5_shap_scene_2025-04.png”,
+“outputs/step5_shap_scene_2025-05.png”,
 ],
-},
-{
-“module”: “src.step6_cbam”,
-“title”: “Step 6 - CBAM explanations”,
-“needs”: [
-“models/mobilenetv2_cbam.keras”,
-“outputs/step4_gradcam_patches.npz”,
-],
-“makes”: [
-“outputs/step6_cbam_patches.npz”,
-“outputs/step6_metrics.json”,
-],
-},
+}
 {
 “module”: “src.step7_validation_fusion”,
 “title”: “Step 7 - Validation and fusion”,
