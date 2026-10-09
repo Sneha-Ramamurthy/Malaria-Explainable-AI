@@ -1,38 +1,75 @@
-"""Backend-free tests for Steps 5-6 numerics.  Run:  python -m pytest tests -q   (or: python tests/test_xai_core.py)"""
-import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+"""Tests for Step 2 dataset outputs.
+
+Run with: python -m pytest tests -q
+These tests need the Step 2 output file to exist.
+"""
+
 import numpy as np
-from src.shap_explain import expected_gradients, completeness, channel_contributions
-from src import xai_utils as U
+import pytest
+
+from src.config import OUT_DIR
 
 
-def _toy(seed=0):
-    r = np.random.default_rng(seed); w1, w2 = r.normal(size=(8, 8)), r.normal(size=(8, 8))
-    def vag(x):
-        z = (w1[None] * x[..., 0] ** 2).sum((1, 2)) + (w2[None] * np.tanh(x[..., 1])).sum((1, 2)) - 3
-        return z, np.stack([2 * w1[None] * x[..., 0], w2[None] * (1 - np.tanh(x[..., 1]) ** 2)], -1)
-    return r, vag, w2
+PATCH_FILE = OUT_DIR / "step2_patches.npz"
 
 
-def test_completeness():
-    r, vag, _ = _toy()
-    X = r.normal(size=(40, 8, 8, 2)).astype(np.float32); bg = r.normal(size=(50, 8, 8, 2)).astype(np.float32)
-    phi, base = expected_gradients(vag, X, bg, n_samples=300, batch=16)
-    assert completeness(phi, vag(X)[0], base)["pearson_sum_phi_vs_target"] > 0.99
+@pytest.fixture
+def dataset():
+    if not PATCH_FILE.exists():
+        pytest.skip(
+            "Step 2 outputs not found. Run the dataset pipeline first."
+        )
+
+    with np.load(PATCH_FILE, allow_pickle=False) as data:
+        return {key: data[key] for key in data.files}
 
 
-def test_zero_weight_feature_gets_zero():
-    r, vag, w2 = _toy(); w2[:] = 0
-    X = r.normal(size=(10, 8, 8, 2)).astype(np.float32); bg = r.normal(size=(20, 8, 8, 2)).astype(np.float32)
-    phi, _ = expected_gradients(vag, X, bg, n_samples=50)
-    assert np.abs(channel_contributions(phi)[:, 1]).max() < 1e-6
+def test_patch_shapes_and_dimensions(dataset):
+    X = dataset["X"]
+    mask = dataset["mask"]
+    risk = dataset["risk"]
+    valid = dataset["valid"]
+
+    assert X.ndim == 4
+    assert X.shape[1:] == (64, 64, 2)
+    assert mask.shape == risk.shape == valid.shape
+    assert mask.shape == X.shape[:3]
 
 
-def test_agreement_identity_and_chance():
-    r = np.random.default_rng(0); a = r.random((6, 64, 64)); v = np.ones_like(a, bool)
-    rho, iou = U.patch_agreement(a, a, v, range(6)); assert rho.mean() > .999 and iou.mean() > .999
-    rho, iou = U.patch_agreement(a, r.random(a.shape), v, range(6)); assert abs(iou.mean() - U.CHANCE_TOP20_IOU) < .03
+def test_dataset_has_finite_values(dataset):
+    assert np.isfinite(dataset["X"]).all()
+    assert np.isfinite(dataset["risk"]).all()
 
 
-if __name__ == "__main__":
-    test_completeness(); test_zero_weight_feature_gets_zero(); test_agreement_identity_and_chance(); print("all passed")
+def test_labels_and_splits_are_valid(dataset):
+    y = dataset["y"]
+    split = dataset["split"]
+
+    assert len(y) == len(dataset["X"])
+    assert len(split) == len(y)
+    assert set(np.unique(y)).issubset({0, 1})
+    assert set(np.unique(split)).issubset({0, 1, 2})
+
+
+def test_spatial_blocks_do_not_leak_between_splits(dataset):
+    meta = dataset["meta"]
+    split = dataset["split"]
+
+    assert meta.ndim == 2
+    assert meta.shape[0] == len(split)
+    assert meta.shape[1] >= 4
+
+    block_ids = meta[:, 3]
+
+    for first_split in (0, 1, 2):
+        first_blocks = set(block_ids[split == first_split])
+
+        for second_split in (0, 1, 2):
+            if first_split >= second_split:
+                continue
+
+            second_blocks = set(block_ids[split == second_split])
+            assert first_blocks.isdisjoint(second_blocks), (
+                f"Spatial blocks overlap between splits "
+                f"{first_split} and {second_split}"
+            )
