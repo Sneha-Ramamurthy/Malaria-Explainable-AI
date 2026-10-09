@@ -150,28 +150,55 @@ def describe(arr):
 
 
 # ----------------------------------------------------------------------------- scenes
+
 def scene_windows(sc, ctx, stride=32):
-    """Sliding windows (same rule as Steps 3/4): top-left corners + the (ndvi,ndwi) stack, >=60% valid."""
-    sv = sc["valid"]
-    img = np.stack([sc["ndvi"], sc["ndwi"]], -1).astype("float32") * sv[..., None]
+    """Build valid sliding windows from a scene."""
+    sv = np.asarray(sc["valid"], dtype=bool)
+    img = np.stack(
+        [sc["ndvi"], sc["ndwi"]], axis=-1
+    ).astype(np.float32) * sv[..., None]
+
     P = ctx.PATCH
     rs, cs, wins = [], [], []
-    for r in range(0, ctx.H - P + 1, stride):
-        for c in range(0, ctx.W - P + 1, stride):
-            if sv[r:r + P, c:c + P].mean() >= 0.6:
-                rs.append(r); cs.append(c); wins.append(img[r:r + P, c:c + P])
+
+    if ctx.H < P or ctx.W < P:
+        return (
+            np.array([], dtype=int),
+            np.array([], dtype=int),
+            np.empty((0, P, P, 2), dtype=np.float32),
+        )
+
+    row_starts = list(range(0, ctx.H - P + 1, stride))
+    col_starts = list(range(0, ctx.W - P + 1, stride))
+
+    if not row_starts or row_starts[-1] != ctx.H - P:
+        row_starts.append(ctx.H - P)
+
+    if not col_starts or col_starts[-1] != ctx.W - P:
+        col_starts.append(ctx.W - P)
+
+    for r in row_starts:
+        for c in col_starts:
+            window_valid = sv[r:r + P, c:c + P]
+
+            if window_valid.mean() >= 0.6:
+                rs.append(r)
+                cs.append(c)
+                wins.append(img[r:r + P, c:c + P])
+
     if not wins:
+        return (
+            np.array([], dtype=int),
+            np.array([], dtype=int),
+            np.empty((0, P, P, 2), dtype=np.float32),
+        )
+
     return (
-        np.array([], dtype=int),
-        np.array([], dtype=int),
-        np.empty((0, P, P, 2), dtype=np.float32),
+        np.asarray(rs, dtype=int),
+        np.asarray(cs, dtype=int),
+        np.stack(wins).astype(np.float32),
     )
 
-return (
-    np.asarray(rs, dtype=int),
-    np.asarray(cs, dtype=int),
-    np.stack(wins).astype(np.float32),
-)
 
 
 def stitch(rs, cs, maps, ctx):
