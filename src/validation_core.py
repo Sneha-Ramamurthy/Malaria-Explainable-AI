@@ -225,7 +225,7 @@ def _f(x, fmt="{:.2f}", na="n/a"):
 def explain_text(r):
     """Plain-language explanation for one patch from a record `r` (keys used below)."""
     lines = []
-    lines.append(f"Predicted malaria risk: {r['level']}  (P(high-risk) = {_f(r['prob'])}, decision threshold {_f(r['thr'], '{:.3f}')}; "
+    lines.append(f"Predicted malaria-risk level (environmental proxy): {r['level']}  (P(high-risk) = {_f(r['prob'])}, decision threshold {_f(r['thr'], '{:.3f}')}; "
                  f"margin {_f(r['margin'], '{:+.2f}')} logit -> {r['band']}).")
     nd, nw = r["ndvi_phi"], r["ndwi_phi"]
     dom, other = (("NDVI", "NDWI") if abs(nd) >= abs(nw) else ("NDWI", "NDVI"))

@@ -12,7 +12,7 @@ Grad-CAM (Step 4), SHAP (Step 5) and CBAM (Step 6) are compared instead of trust
 
 Run:  python -m src.step7_validation                (~3-6 min on CPU; needs Steps 2-6 outputs)
 Env:  STAB_NOISE=0.05       noise sd as a fraction of each feature's training sd
-      N_STAB=60             patches used for the stability test      STAB_SHAP_SAMPLES=50  SHAP samples there
+      N_STAB=60             patches used for the stability test      STAB_SHAP_SAMPLES=150  SHAP samples there
       N_RANDOM=5            random-deletion draws                    CBAM_MAP=spatial|energy
 Outputs (outputs/):
   step7_validation_patches.npz     fused maps (N,64,64), agreement count, per-patch IoU / rho / support / deletion drop (20% deleted)
@@ -38,7 +38,7 @@ Q = 0.2                                                   # "top-20%" region, as
 SIGMA = 1.5                                               # SHAP evidence smoothing, as in Step 5
 NOISE = float(os.environ.get("STAB_NOISE", 0.05))
 N_STAB = int(os.environ.get("N_STAB", 60))
-STAB_SHAP_SAMPLES = int(os.environ.get("STAB_SHAP_SAMPLES", 50))
+STAB_SHAP_SAMPLES = int(os.environ.get("STAB_SHAP_SAMPLES", 150))   # 50 gave a SHAP noise-floor IoU of only ~0.55
 N_RANDOM = int(os.environ.get("N_RANDOM", 5))
 CBAM_MAP = os.environ.get("CBAM_MAP", "spatial")          # which CBAM map represents "CBAM attention"
 FRACS = (0.05, 0.10, 0.20, 0.30, 0.50)
@@ -117,13 +117,16 @@ Xn = V.add_noise(Xs, vs, sd, NOISE, seed=7)
 
 gc = GradCAM(model, "last_conv"); ex = CBAMExtractor(model)
 rng = np.random.RandomState(0)
-bg = X[rng.choice(np.where(split == 0)[0], N_BG, replace=False)]            # same background as Step 5
+tr_idx = np.where(split == 0)[0]
+bg = X[np.sort(rng.choice(tr_idx, size=min(N_BG, len(tr_idx)), replace=False))]   # identical to Step 5 (same set AND order)
 cam_c, cam_n = cam[idx_s], gc(Xn)[0]
 cb_c = cbam[idx_s]
 An = ex(Xn, keep_features=False); cb_n = to_map(An["sp"] if CBAM_MAP == "spatial" else An["energy"], vs)[0]
 phi_a, _ = expected_gradients(fn, Xs, bg, n_samples=STAB_SHAP_SAMPLES, batch=64, seed=10)
 phi_b, _ = expected_gradients(fn, Xs, bg, n_samples=STAB_SHAP_SAMPLES, batch=64, seed=11)   # noise floor: new MC seed only
-phi_n, _ = expected_gradients(fn, Xn, bg, n_samples=STAB_SHAP_SAMPLES, batch=64, seed=10)
+# seed 12 (NOT 10): reusing the clean run's seed would share the same Monte-Carlo baselines/alphas and make the
+# noisy-vs-clean comparison look more stable than the same-input/new-seed noise floor it is judged against.
+phi_n, _ = expected_gradients(fn, Xn, bg, n_samples=STAB_SHAP_SAMPLES, batch=64, seed=12)
 sh_a, sh_b, sh_n = (evidence_map(p, vs, SIGMA) for p in (phi_a, phi_b, phi_n))
 fu_c, fu_n = V.fuse([cam_c, sh_a, cb_c], vs), V.fuse([cam_n, sh_n, cb_n], vs)
 
@@ -184,7 +187,7 @@ np.savez_compressed(OUT_DIR / "step7_validation_patches.npz", fused_all3=fused_a
 region = U.region_map(ctx)
 SCENE, scene_out = {}, {}
 for m in MONTHS:
-    s = ctx.scene[m]; sv = s["valid"]
+    s = ctx.scene[m]; sv = U.scene_valid(s)
     gcs = np.load(OUT_DIR / f"step4_scene_cam_{m}.npz")["cam"].astype("float32")
     shs = np.load(OUT_DIR / f"step5_scene_shap_{m}.npz")["evidence"].astype("float32")
     L6 = np.load(OUT_DIR / f"step6_scene_cbam_{m}.npz"); cbs = L6["spatial" if CBAM_MAP == "spatial" else "energy"].astype("float32")
@@ -232,12 +235,13 @@ summary = dict(
                                          for k in MAPS},
     best_by_deletion_gain_predicted_high=best,
     shap_stability_above_noise_floor=bool(STAB["shap"]["top20_iou"]["mean"] >= 0.9 * STAB["shap_noise_floor_same_input_new_seed"]["top20_iou"]["mean"]))
-json.dump(dict(settings=dict(top_fraction=Q, stab_noise=NOISE, n_stab=int(len(idx_s)), stab_shap_samples=STAB_SHAP_SAMPLES,
-                             n_random=N_RANDOM, cbam_map=CBAM_MAP, fractions=list(FRACS), threshold=THR),
-               spatial_agreement=AGREE, overlap_with_proxy_highrisk=OVER, environment_focus=FOCUS, stability=STAB,
-               fidelity_deletion=DEL, support_counts_test=sup_counts, support_counts_predicted_high=sup_counts_hi,
-               scene=SCENE, summary=summary, recommended_fusion=("fused_gc_shap" if best == "fused_gc_shap" else "fused_all3")),
-          open(OUT_DIR / "step7_metrics.json", "w"), indent=1, default=_j)
+with open(OUT_DIR / "step7_metrics.json", "w", encoding="utf-8") as _fh:
+    json.dump(dict(settings=dict(top_fraction=Q, stab_noise=NOISE, n_stab=int(len(idx_s)), stab_shap_samples=STAB_SHAP_SAMPLES,
+                                 n_random=N_RANDOM, cbam_map=CBAM_MAP, fractions=list(FRACS), threshold=THR),
+                   spatial_agreement=AGREE, overlap_with_proxy_highrisk=OVER, environment_focus=FOCUS, stability=STAB,
+                   fidelity_deletion=DEL, support_counts_test=sup_counts, support_counts_predicted_high=sup_counts_hi,
+                   scene=SCENE, summary=summary, recommended_fusion=("fused_gc_shap" if best == "fused_gc_shap" else "fused_all3")),
+              _fh, indent=1, default=_j)
 
 # ------------------------------------------------------------------ figures
 COL = dict(gradcam="#e67e22", shap="#c0392b", cbam="#2980b9", fused_gc_shap="#8e44ad", fused_all3="#27ae60")
@@ -301,7 +305,7 @@ plt.tight_layout(); plt.savefig(OUT_DIR / "step7_fusion_patches.png", dpi=75); p
 
 # (e) scene fusion
 for m in MONTHS:
-    s = ctx.scene[m]; sv = s["valid"]; so = scene_out[m]
+    s = ctx.scene[m]; sv = U.scene_valid(s); so = scene_out[m]
     prb = np.load(OUT_DIR / f"step3_scene_prob_{m}.npz")["prob"].astype("float32"); pred = np.nan_to_num(prb, nan=0) >= THR
     fig, ax = plt.subplots(1, 3, figsize=(21, 6.5))
     overlay(ax[0], np.ma.masked_where(~sv, s["ndvi"].astype("float32")), np.nan_to_num(so["fused"]), "YlGn", 0, .7, f"{m}  fused explanation over NDVI")

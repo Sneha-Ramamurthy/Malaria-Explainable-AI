@@ -46,10 +46,19 @@ def expected_gradients(value_and_grad, X, baselines, n_samples=100, batch=64, se
 def completeness(phi, fx, base):
     """How well  sum(phi) ~= f(x) - base  holds (Monte-Carlo error of the estimator)."""
     s = phi.reshape(len(phi), -1).sum(1); tgt = np.asarray(fx) - base
-    err = np.abs(s - tgt)
+    signed = s - tgt
+    err = np.abs(signed)
+    ss_tot = float(((tgt - tgt.mean()) ** 2).sum())
     return dict(mean_abs_err=float(err.mean()), median_abs_err=float(np.median(err)),
                 mean_abs_target=float(np.abs(tgt).mean()),
+                # error relative to the size of what is being explained (0 = perfectly additive)
+                relative_mean_abs_err=float(err.mean() / max(np.abs(tgt).mean(), 1e-12)),
+                # systematic over/under-attribution (should be ~0; a large value means a biased estimator)
+                mean_signed_err=float(signed.mean()),
+                # share of the variance of f(x) - base that sum(phi) reproduces (1 = perfect)
+                r2_sum_phi_vs_target=float(1.0 - (signed ** 2).sum() / ss_tot) if ss_tot > 1e-12 else None,
                 pearson_sum_phi_vs_target=float(np.corrcoef(s, tgt)[0, 1]) if len(s) > 2 and s.std() > 0 else None,
+                # kept for backward compatibility with older metrics files; NOT a size-of-error measure
                 rel_err_of_variance=float(err.var() / max(tgt.var(), 1e-12)))
 
 

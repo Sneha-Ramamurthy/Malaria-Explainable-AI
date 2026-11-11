@@ -375,9 +375,6 @@ frac = np.divide(
     where=valid_counts > 0,
 )
 
-FRAC_THR = float(np.quantile(frac, POS_QUANTILE))
-y = (frac > FRAC_THR).astype(np.uint8)
-
 # Keep all patches from a spatial block in the same split.
 rng = np.random.RandomState(42)
 blocks = np.unique(meta[:, 3])
@@ -395,6 +392,11 @@ split = np.where(
     0,
     np.where(np.isin(meta[:, 3], val_blocks), 1, 2),
 ).astype(np.uint8)
+
+# The positive-label cutoff is learned from TRAINING patches only, so no
+# information from validation/test blocks influences how labels are defined.
+FRAC_THR = float(np.quantile(frac[split == 0], POS_QUANTILE))
+y = (frac > FRAC_THR).astype(np.uint8)
 
 print(
     f"Patch high-risk-fraction cutoff: {FRAC_THR:.3f} | "
@@ -439,8 +441,9 @@ for month in MONTHS:
         OUT_DIR / f"step2_scene_{month}.npz",
         ndvi=data["ndvi"].astype(np.float16),
         ndwi=data["ndwi"].astype(np.float16),
-        valid=data["valid_in"],
-        valid=data["valid_risk"],
+        valid=data["valid_in"],            # every observed pixel (land + inland water)
+        valid_in=data["valid_in"],         # same as `valid`, explicit name
+        valid_risk=data["valid_risk"],     # observed LAND pixels: exactly what the model inputs / labels use
         water=data["water"],
         risk=data["risk"].astype(np.float16),
         hr=data["hr"],

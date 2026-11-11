@@ -1,7 +1,9 @@
 from pathlib import Path
 import argparse
+import os
 import subprocess
 import sys
+import time
 
 
 # Project paths
@@ -145,7 +147,7 @@ STEPS = [
     },
     {
         "number": 7,
-        "module": "src.step7_validation_fusion",
+        "module": "src.step7_validation",
         "title": "Step 7 - Validation and fusion",
         "needs": [
             "models/mobilenetv2_cbam.keras",
@@ -183,7 +185,7 @@ STEPS = [
     },
     {
         "number": 8,
-        "module": "src.step8_final",
+        "module": "src.step8_final_output",
         "title": "Step 8 - Integrated explanation and final report",
         "needs": [
             "outputs/step2_patches.npz",
@@ -217,19 +219,42 @@ STEPS = [
             "outputs/step8_final_2025-05.tif",
         ],
     },
+    {
+        "number": 9,
+        "module": "src.text_explainer",
+        "title": "Step 9 - Text explainable-AI layer",
+        "needs": [
+            "outputs/step8_explanations_test.csv",
+            "outputs/step8_report.json",
+        ],
+        "makes": [
+            "outputs/text_explanations.md",
+            "outputs/text_explanations.json",
+        ],
+    },
 ]
 
 
-def check_files(paths, step_number, file_type):
+def _is_missing(path, newer_than):
+    """A file is 'missing' if absent or (when newer_than is given) not rewritten by this run."""
+    file = ROOT / path
+
+    if not file.is_file():
+        return True
+
+    return newer_than is not None and file.stat().st_mtime < newer_than
+
+
+def check_files(paths, step_number, file_type, newer_than=None):
     missing = [
         str(ROOT / path)
         for path in paths
-        if not (ROOT / path).is_file()
+        if _is_missing(path, newer_than)
     ]
 
     if missing:
         print(f"\nERROR: Step {step_number} cannot continue.")
-        print(f"Missing {file_type} file(s):")
+        print(f"Missing or stale {file_type} file(s):")
 
         for path in missing:
             print(f"  - {path}")
@@ -258,6 +283,11 @@ def run_step(step):
 
     print("Running:", " ".join(command))
 
+    # Outputs left over from an earlier run must not make a step that did nothing look successful.
+    # With CACHE=1 several steps deliberately reuse files, so only existence is checked then.
+    use_cache = os.environ.get("CACHE", "").strip().lower() in {"1", "true", "yes", "on"}
+    started = None if use_cache else time.time() - 2
+
     try:
         subprocess.run(
             command,
@@ -270,7 +300,7 @@ def run_step(step):
         print("Fix the error above before continuing.")
         return False
 
-    if not check_files(step["makes"], number, "expected output"):
+    if not check_files(step["makes"], number, "expected output", newer_than=started):
         print(f"\nERROR: {title} did not create all expected outputs.")
         return False
 
@@ -286,7 +316,7 @@ def main():
         "--steps",
         nargs="+",
         type=int,
-        choices=range(1, 9),
+        choices=range(1, 10),
         help="Optional step numbers to run, for example: --steps 1 2",
     )
     args = parser.parse_args()

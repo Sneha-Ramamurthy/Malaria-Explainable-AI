@@ -10,7 +10,7 @@ Instead of "Malaria risk: High" the system now returns, for every patch and ever
     a plain-language explanation generated from the numbers above
 
 Needs no model / TensorFlow: it only combines the saved outputs of Steps 2-7.
-Run:  python -m src.step8_final
+Run:  python -m src.step8_final_output
 Env:  FUSE_VARIANT=all3|gc_shap   which Step-7 fusion is shown (default all3 = Grad-CAM + SHAP + CBAM, as in the document)
       N_EXAMPLES=6                number of per-patch explanation panels
 
@@ -41,7 +41,8 @@ X, y, split, valid, hrm, meta = ctx.X, ctx.y, ctx.split, ctx.valid, ctx.hrm, ctx
 THR, MONTHS, PATCH = ctx.THR, ctx.MONTHS, ctx.PATCH
 LOGIT_THR = V.logit_of(THR)
 M3 = ctx.M3
-M7 = json.load(open(OUT_DIR / "step7_metrics.json"))
+with open(OUT_DIR / "step7_metrics.json", encoding="utf-8") as _fh:
+    M7 = json.load(_fh)
 masks = U.env_masks(ctx)
 te = split == 2; idx_te = np.where(te)[0]
 
@@ -80,7 +81,7 @@ recs = {int(i): record(i) for i in idx_te}
 cols = ["idx", "month", "row", "col", "y_proxy", "prob", "level", "margin", "band", "ndvi_phi", "ndwi_phi", "dominant_feature",
         "enrich_high_risk", "enrich_vegetated", "enrich_moist", "enrich_near_water", "iou_gradcam_shap", "iou_gradcam_cbam",
         "iou_shap_cbam", "support", "n_pairs_agreeing", "logit_drop_delete_top20", "logit_drop_delete_random20"]
-with open(OUT_DIR / "step8_explanations_test.csv", "w", newline="") as fh:
+with open(OUT_DIR / "step8_explanations_test.csv", "w", newline="", encoding="utf-8") as fh:
     w = csv.writer(fh); w.writerow(cols)
     for r in recs.values():
         e = r["enrich"]
@@ -152,7 +153,7 @@ print("example panels:", [e["figure"] for e in EX])
 region = U.region_map(ctx)
 SCENE_REP = {}
 for m in MONTHS:
-    s = ctx.scene[m]; sv = s["valid"]
+    s = ctx.scene[m]; sv = U.scene_valid(s)
     prb = np.load(OUT_DIR / f"step3_scene_prob_{m}.npz")["prob"].astype("float32")
     gcs = np.load(OUT_DIR / f"step4_scene_cam_{m}.npz")["cam"].astype("float32")
     L5 = np.load(OUT_DIR / f"step5_scene_shap_{m}.npz"); shs, pn, pw = (L5[k].astype("float32") for k in ("evidence", "ndvi_phi", "ndwi_phi"))
@@ -209,7 +210,8 @@ for m in MONTHS:
         ax.imshow(np.ma.masked_where(~sv, nd), cmap="YlGn", vmin=0, vmax=.7)
         ax.imshow(np.ma.masked_invalid(c), cmap="jet", alpha=0.55, vmin=0, vmax=1)
         ax.contour(pred & cover, levels=[0.5], colors="white", linewidths=.5); ax.set_title(title, fontsize=10); ax.axis("off")
-    lim = float(np.nanpercentile(np.abs(np.concatenate([pn[cover & np.isfinite(pn)], pw[cover & np.isfinite(pw)]])), 99))
+    _phi_vals = np.abs(np.concatenate([pn[cover & np.isfinite(pn)], pw[cover & np.isfinite(pw)]]))
+    lim = max(float(np.percentile(_phi_vals, 99)) if _phi_vals.size else 0.0, 1e-6)
     fig, ax = plt.subplots(2, 4, figsize=(27, 13.5))
     vmax = float(np.nanpercentile(prb[cover], 99)) if cover.any() else 1.0
     im = ax[0, 0].imshow(np.ma.masked_where(~cover, np.nan_to_num(prb)), cmap="YlOrRd", vmin=0, vmax=max(vmax, 1e-3))
@@ -233,14 +235,23 @@ cav = ["Risk labels are PROXY labels built in Step 2 (distance-to-water, moistur
        "NDVI / NDWI are decoded from colour-rendered GeoTIFFs (decode.py): values are an ordered proxy, not calibrated indices.",
        "Only two months (2025-04, 2025-05) and one region are available; test blocks are few, so per-method differences should be read as indicative.",
        "The SHAP evidence map is computed from input gradients of the same logit that the deletion test perturbs, so it is favoured by "
-       "that test; Grad-CAM and CBAM operate on a coarse 16x16 feature grid. CBAM attention is a learned gate, not an attribution of the output, "
-       "and agrees only weakly with Grad-CAM, so it adds the least to the fusion."]
+       "that test; Grad-CAM and CBAM operate on a coarse feature grid. CBAM attention is a learned gate, not an attribution of the output."]
+_ag = M7["spatial_agreement"]["predicted_high"]
+_cb = [v["top20_iou"]["mean"] for k, v in _ag.items() if "cbam" in k and isinstance(v, dict) and v.get("top20_iou")]
+if _cb:
+    _chance = M7["spatial_agreement"]["chance_top20_iou"]
+    _m = float(np.mean(_cb))
+    cav.append(f"CBAM attention overlaps the other two methods with mean top-20% IoU {_m:.2f} (chance {_chance:.2f}): "
+               + ("only weakly (< 2x chance), so it adds little to the fusion." if _m < 2 * _chance
+                  else "clearly above chance, so it contributes real agreement to the fusion."))
 rep_json = dict(fusion_variant=VNAME, threshold=THR, prediction_performance=dict(patch_test=M3["patch_test"], pixel_test=M3["pixel_test"]),
                 patch_summary=PATCH_SUM, scene=SCENE_REP, examples=EX, caveats=cav,
                 step7_summary=M7["summary"])
-json.dump(rep_json, open(OUT_DIR / "step8_report.json", "w"), indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
+with open(OUT_DIR / "step8_report.json", "w", encoding="utf-8") as _fh:
+    json.dump(rep_json, _fh, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
 
 pt, px = M3["patch_test"], M3["pixel_test"]
+ci = M3.get("patch_test_ci95_block_bootstrap") or {}
 dg = M7["fidelity_deletion"]; ag = M7["spatial_agreement"]["predicted_high"]; st = M7["stability"]
 md = [f"# Final explainable output (Step 8)\n",
       f"Fusion shown: **{VNAME}**. Decision threshold P(high-risk) >= {THR:.3f}.\n",
@@ -256,6 +267,8 @@ md = [f"# Final explainable output (Step 8)\n",
       "## 2. Prediction performance vs explanation quality (kept separate)\n",
       f"- Prediction (unseen test blocks): patch precision {pt['precision']:.2f}, recall {pt['recall']:.2f}, F1 {pt['f1']:.2f}, AUC {pt['auc']:.2f}; "
       f"pixel IoU {px['iou']:.2f} (precision {px['precision']:.2f}, recall {px['recall']:.2f}). The XAI layer does not change these.",
+      ("- 95% block-bootstrap intervals of the patch test metrics: " + ", ".join(f"{k} [{v['low']:.2f}, {v['high']:.2f}]" for k, v in ci.items() if isinstance(v, dict))
+       + " (test set is small; read differences between methods with this in mind).") if ci else "- (No confidence intervals in step3_metrics.json; re-run Step 3.)",
       f"- Spatial agreement (predicted-high test patches, mean top-20% IoU; chance {M7['spatial_agreement']['chance_top20_iou']:.2f}): "
       + ", ".join(f"{k} {v['top20_iou']['mean']:.2f}" for k, v in ag.items() if isinstance(v, dict) and 'top20_iou' in v) + ".",
       f"- Stability under {st['noise_level_x_feature_sd']}x-sd input noise (top-20% IoU, clean vs noisy): Grad-CAM {st['gradcam']['top20_iou']['mean']:.2f}, "
@@ -271,5 +284,6 @@ md += ["## 4. Example patch explanations (unseen test blocks)\n"]
 for e in EX:
     md += [f"### Patch #{e['idx']} [{e['tag']}] - {e['month']}\n", "```\n" + e["text"] + "\n```\n", f"![patch {e['idx']}]({e['figure']})\n"]
 md += ["## 5. Caveats\n"] + [f"- {c}" for c in cav]
-open(OUT_DIR / "step8_report.md", "w").write("\n".join(md) + "\n")
+with open(OUT_DIR / "step8_report.md", "w", encoding="utf-8") as _fh:
+    _fh.write("\n".join(md) + "\n")
 print("done")
