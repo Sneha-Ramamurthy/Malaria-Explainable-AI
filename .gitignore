@@ -15,6 +15,9 @@ __pycache__/
 .mypy_cache/
 .ipynb_checkpoints/
 
+# Input rasters (large; keep locally, share separately)
+dataset/
+
 # Generated model files
 models/*.keras
 models/*.h5

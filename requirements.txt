@@ -6,4 +6,6 @@ opencv-python-headless
 scikit-learn
 scipy
 shap
-tensorflow-cpu
+tensorflow-cpu>=2.16   # the code uses the Keras 3 API (`import keras`, keras.ops)
+keras>=3.0
+pytest

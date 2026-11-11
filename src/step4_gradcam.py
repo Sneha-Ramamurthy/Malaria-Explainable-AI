@@ -373,8 +373,6 @@ rnd = build_model(
 if rnd.output_shape[-1] != 1:
     raise ValueError("Randomised model has an unexpected output shape.")
 
-cam_r, _, _ = gc(X[te]) if False else (None, None, None)
-
 # Use the randomised model, not the trained GradCAM instance.
 rnd_gc = GradCAM(rnd, "last_conv")
 cam_r, _, _ = rnd_gc(X[te], batch=128)
@@ -538,27 +536,27 @@ for month in MONTHS:
             cam=sc.astype("float16"),
         )
 
-        with rasterio.open(
-            tif_path,
-            "w",
-            driver="GTiff",
-            height=H,
-            width=W,
-            count=1,
-            dtype="float32",
-            crs=M2["crs"],
-            transform=affine,
-            nodata=-9999,
-        ) as dst:
-            dst.write(
-                np.nan_to_num(
-                    sc,
-                    nan=-9999.0,
-                    posinf=-9999.0,
-                    neginf=-9999.0,
-                ).astype("float32"),
-                1,
-            )
+    with rasterio.open(
+        tif_path,
+        "w",
+        driver="GTiff",
+        height=H,
+        width=W,
+        count=1,
+        dtype="float32",
+        crs=M2["crs"],
+        transform=affine,
+        nodata=-9999,
+    ) as dst:
+        dst.write(
+            np.nan_to_num(
+                sc,
+                nan=-9999.0,
+                posinf=-9999.0,
+                neginf=-9999.0,
+            ).astype("float32"),
+            1,
+        )
 
     scene_cam[month] = sc
 
@@ -798,7 +796,7 @@ for month in MONTHS:
 
     pred_contour = pred & sv & ~s["water"].astype(bool)
 
-    if pred_contour.any() and pred_contour.all() is False:
+    if pred_contour.any() and not pred_contour.all():
         axes[2].contour(
             pred_contour.astype("float32"),
             levels=[0.5],

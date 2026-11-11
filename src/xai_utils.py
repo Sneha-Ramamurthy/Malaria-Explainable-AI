@@ -151,9 +151,20 @@ def describe(arr):
 
 # ----------------------------------------------------------------------------- scenes
 
+def scene_valid(sc):
+    """Observed LAND pixels of a scene npz / dict: the mask the model was trained with.
+
+    Step 2 zeroes every non-land pixel (water, sea, cloud, no-data) in the patch inputs, so every scene-level
+    step must do the same.  `valid_risk` is that mask; the older `valid` key (observed pixels incl. inland
+    water) is only used as a fallback for scene files written by an older Step 2.
+    """
+    keys = sc.files if hasattr(sc, "files") else sc.keys()
+    return np.asarray(sc["valid_risk"] if "valid_risk" in keys else sc["valid"], dtype=bool)
+
+
 def scene_windows(sc, ctx, stride=32):
-    """Build valid sliding windows from a scene."""
-    sv = np.asarray(sc["valid"], dtype=bool)
+    """Build valid sliding windows from a scene (same land-only masking as the training patches)."""
+    sv = scene_valid(sc)
     img = np.stack(
         [sc["ndvi"], sc["ndwi"]], axis=-1
     ).astype(np.float32) * sv[..., None]

@@ -28,8 +28,12 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 
+from types import SimpleNamespace
+
+from . import xai_utils as U
 from .config import OUT_DIR, ROOT
 from .models import build_model
+from .train_utils import block_bootstrap_ci, youden_threshold
 
 
 # ---------------- Configuration ----------------
@@ -181,39 +185,34 @@ print("Model parameters:", f"{model.count_params():,}")
 
 # ---------------- 3. Prepare training datasets ----------------
 
-def augment_patch(x, target):
-    """Apply label-preserving spatial augmentation and small noise."""
-    x = tf.image.random_flip_left_right(x)
-    x = tf.image.random_flip_up_down(x)
+def augment_patch(x, valid_px, target):
+    """Label-preserving flips/rotations plus small noise.
 
-    k = tf.random.uniform(
-        shape=[],
-        minval=0,
-        maxval=4,
-        dtype=tf.int32,
-    )
-    x = tf.image.rot90(x, k)
+    The validity mask is flipped/rotated together with the patch and the noise is applied ONLY to observed land
+    pixels: masked pixels must stay exactly 0 (they are 0 at inference time).
+    """
+    both = tf.concat([x, valid_px], axis=-1)            # (64, 64, 3): NDVI, NDWI, validity
+    both = tf.image.random_flip_left_right(both)
+    both = tf.image.random_flip_up_down(both)
+    k = tf.random.uniform(shape=[], minval=0, maxval=4, dtype=tf.int32)
+    both = tf.image.rot90(both, k)
+    x, valid_px = both[..., :2], both[..., 2:]
 
-    sensor_noise = tf.random.normal(
-        tf.shape(x),
-        mean=0.0,
-        stddev=0.02,
-    )
+    sensor_noise = tf.random.normal(tf.shape(x), mean=0.0, stddev=0.02)
+    channel_offset = tf.random.normal([1, 1, 2], mean=0.0, stddev=0.03)
 
-    channel_offset = tf.random.normal(
-        [1, 1, 2],
-        mean=0.0,
-        stddev=0.03,
-    )
-
-    x = x + sensor_noise + channel_offset
+    x = x + (sensor_noise + channel_offset) * valid_px
 
     return x, target
 
 
 ds_tr = (
     tf.data.Dataset.from_tensor_slices(
-        (X[tr], y[tr].astype(np.float32))
+        (
+            X[tr],
+            valid[tr].astype(np.float32)[..., None],
+            y[tr].astype(np.float32),
+        )
     )
     .shuffle(
         buffer_size=min(1000, int(tr.sum())),
@@ -301,9 +300,9 @@ print("Saved model:", model_path)
 p_va = model.predict(X[va], batch_size=128, verbose=0).ravel()
 p_te = model.predict(X[te], batch_size=128, verbose=0).ravel()
 
-# Select the threshold using validation predictions only.
-# This avoids using test predictions to choose the threshold.
-threshold = float(np.quantile(p_va, 0.70))
+# Select the threshold using validation predictions only (never the test set):
+# the value maximising Youden's J = TPR - FPR, which does not depend on class prevalence.
+threshold = youden_threshold(y[va], p_va)
 
 
 def patch_metrics(true_labels, probabilities, cutoff):
@@ -339,6 +338,9 @@ def patch_metrics(true_labels, probabilities, cutoff):
 
 metrics_val = patch_metrics(y[va], p_va, threshold)
 metrics_test = patch_metrics(y[te], p_te, threshold)
+
+# Uncertainty of the test metrics (the test set is small): block bootstrap over spatial blocks.
+metrics_test_ci = block_bootstrap_ci(y[te], p_te, threshold, patch_meta[te, 3])
 
 
 # ---------------- 6. Logistic regression baseline ----------------
@@ -455,45 +457,19 @@ for month in MONTHS:
 
     scene_valid = scene["valid_risk"].astype(bool)
 
-    image = np.stack(
-        [scene["ndvi"], scene["ndwi"]],
-        axis=-1,
-    ).astype(np.float32)
-
-    image *= scene_valid[..., None]
-
     accumulator = np.zeros((H, W), dtype=np.float32)
     counts = np.zeros((H, W), dtype=np.float32)
 
-    rows = []
-    cols = []
-    windows = []
+    # Same window builder as Steps 4-8: land-only inputs, >=60 % valid, plus edge-aligned last row/column.
+    rows, cols, window_array = U.scene_windows(
+        scene, SimpleNamespace(PATCH=PATCH, H=H, W=W), stride=STRIDE
+    )
 
-    for row in range(0, H - PATCH + 1, STRIDE):
-        for col in range(0, W - PATCH + 1, STRIDE):
-            patch_valid = scene_valid[
-                row:row + PATCH,
-                col:col + PATCH,
-            ]
-
-            if patch_valid.mean() < 0.6:
-                continue
-
-            rows.append(row)
-            cols.append(col)
-            windows.append(
-                image[
-                    row:row + PATCH,
-                    col:col + PATCH,
-                ]
-            )
-
-    if not windows:
+    if len(window_array) == 0:
         raise ValueError(
             f"No valid scene windows generated for {month}."
         )
 
-    window_array = np.asarray(windows, dtype=np.float32)
     probabilities = model.predict(
         window_array,
         batch_size=128,
@@ -564,16 +540,55 @@ for local_index, index in enumerate(test_indices):
 
     test_accumulator[month][row:row + PATCH, col:col + PATCH] += probability
     test_counts[month][row:row + PATCH, col:col + PATCH] += 1
+
+# Pixel-level comparison with the proxy labels, using ONLY pixels that lie in
+# unseen test blocks and are observed land (same definition as the figures).
+true_pos = false_pos = false_neg = 0
+
+for month in MONTHS:
+    counts = test_counts[month]
+    covered = counts > 0
+
+    if not covered.any():
+        continue
+
+    pixel_probability = np.zeros((H, W), dtype=np.float32)
+    pixel_probability[covered] = (
+        test_accumulator[month][covered] / counts[covered]
+    )
+
+    predicted_px = pixel_probability >= threshold
+    truth_px = scene_data[month]["hr"].astype(bool)
+    evaluated = covered & scene_data[month]["valid_risk"].astype(bool)
+
+    true_pos += int((predicted_px & truth_px & evaluated).sum())
+    false_pos += int((predicted_px & ~truth_px & evaluated).sum())
+    false_neg += int((~predicted_px & truth_px & evaluated).sum())
+
+pixel_precision = true_pos / max(true_pos + false_pos, 1)
+pixel_recall = true_pos / max(true_pos + false_neg, 1)
+pixel_f1 = (
+    2 * pixel_precision * pixel_recall
+    / max(pixel_precision + pixel_recall, 1e-12)
+)
+iou = true_pos / max(true_pos + false_pos + false_neg, 1)
+
+print(
+    f"PIXEL TEST METRICS: IoU {iou:.3f} | precision {pixel_precision:.3f} "
+    f"| recall {pixel_recall:.3f} | F1 {pixel_f1:.3f}"
+)
+
 # ---------------- 9. Save metrics ----------------
 
 metrics = {
     "model_config": CFG,
     "threshold": threshold,
-    "threshold_source": "70th percentile of validation predictions",
+    "threshold_source": "Youden J (TPR - FPR) maximised on validation predictions",
     "epochs": epochs_trained,
     "params": int(model.count_params()),
     "patch_val": metrics_val,
     "patch_test": metrics_test,
+    "patch_test_ci95_block_bootstrap": metrics_test_ci,
     "baseline_logreg_test": metrics_baseline,
     "pixel_test": {
         "iou": float(iou),

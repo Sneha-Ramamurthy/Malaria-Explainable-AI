@@ -38,7 +38,7 @@ def env_flag(name, default=False):
 
 CACHE = env_flag("CACHE", False)
 SHAP_LIB = env_flag("SHAP_LIB", True)
-N_SAMPLES = int(os.environ.get("SHAP_SAMPLES", "100"))
+N_SAMPLES = int(os.environ.get("SHAP_SAMPLES", "300"))   # 100 left ~25 % completeness error on the shipped model
 SCENE_SAMPLES = int(os.environ.get("SCENE_SAMPLES", "30"))
 N_BG = 100
 SIGMA = 1.5
@@ -265,6 +265,11 @@ print(
     f"max probability difference vs Step 4: {prob_diff:.5f}"
 )
 print("Completeness:", comp)
+if comp.get("relative_mean_abs_err") is not None and comp["relative_mean_abs_err"] > 0.10:
+    print(
+        f"WARNING: SHAP attributions miss {comp['relative_mean_abs_err']:.0%} of the effect they should explain "
+        f"(Monte-Carlo error). Re-run with a larger SHAP_SAMPLES (now {N_SAMPLES}) before trusting the maps."
+    )
 
 fc = channel_contributions(phi, valid)
 resid = logit - base - fc.sum(axis=1)
@@ -719,25 +724,25 @@ axes[1].set_title("Mean signed contribution")
 axes[1].legend()
 
 valid_test = valid[idx_te]
-for channel, label in ((0, "NDVI"), (1, "NDWI")):
+for channel, label, colour in ((0, "NDVI", "tab:green"), (1, "NDWI", "tab:blue")):
     values = X[idx_te][..., channel][valid_test]
     contributions = phi[idx_te][..., channel][valid_test]
 
     if len(values):
-        rng_plot = np.random.RandomState(3)
+        rng_plot = np.random.RandomState(3 + channel)
         chosen = rng_plot.choice(
             len(values), min(25000, len(values)), replace=False
         )
-        xv, pv = values[chosen], contributions[chosen]
-        axes[2].scatter(xv, pv, s=2, alpha=0.12, c="black",
-                        label=f"{label} points")
-        break
+        axes[2].scatter(
+            values[chosen], contributions[chosen],
+            s=2, alpha=0.12, c=colour, label=f"{label} pixels",
+        )
 
 axes[2].axhline(0, color="gray", lw=0.8)
-axes[2].set_xlabel("Input feature value")
+axes[2].set_xlabel("Input feature value (NDVI or NDWI)")
 axes[2].set_ylabel("SHAP contribution (logit)")
 axes[2].set_title("Feature dependence sample")
-axes[2].legend()
+axes[2].legend(markerscale=6)
 
 plt.tight_layout()
 plt.savefig(OUT_DIR / "step5_shap_global.png", dpi=80)

@@ -24,7 +24,7 @@ from .models import build_model
 from .cbam_attention import CBAMExtractor, to_map, channel_input_affinity, attention_weighted_share
 from . import xai_utils as U
 
-CACHE = bool(os.environ.get("CACHE"))
+CACHE = os.environ.get("CACHE", "").strip().lower() in {"1", "true", "yes", "on"}   # CACHE=0 must mean OFF
 ctx = U.load_context()
 X, y, split, valid, hrm, meta = ctx.X, ctx.y, ctx.split, ctx.valid, ctx.hrm, ctx.meta
 THR, MONTHS, PATCH, H, W = ctx.THR, ctx.MONTHS, ctx.PATCH, ctx.H, ctx.W
@@ -117,7 +117,8 @@ for m in MONTHS:
     else:
         rs, cs, wins = U.scene_windows(s, ctx, stride=32)
         Aw = ex(wins, batch=256, keep_features=False)
-        wv = np.stack([s["valid"][r:r + PATCH, c:c + PATCH] for r, c in zip(rs, cs)])
+        sv_land = U.scene_valid(s)
+        wv = np.stack([sv_land[r:r + PATCH, c:c + PATCH] for r, c in zip(rs, cs)])
         ssp = U.stitch(rs, cs, to_map(Aw["sp"], wv)[0], ctx)
         sen = U.stitch(rs, cs, to_map(Aw["energy"], wv)[0], ctx)
         np.savez_compressed(cf, spatial=ssp.astype(np.float16), energy=sen.astype(np.float16))
@@ -126,17 +127,18 @@ for m in MONTHS:
                    ["CBAM spatial attention (0-1)", "CBAM output energy (0-1)"], ctx)
     prb = np.load(OUT_DIR / f"step3_scene_prob_{m}.npz")["prob"].astype("float32")
     ref = np.load(OUT_DIR / f"step4_scene_cam_{m}.npz")["cam"].astype("float32")
-    ok = s["valid"] & ~s["water"] & (region[m] == 3)
+    ok = U.scene_valid(s) & ~s["water"] & (region[m] == 3)
     scene_stats[m] = dict(spatial_attention=U.scene_agreement(ssp, ref, prb, s["hr"], ok, THR) or {},
                           cbam_energy=U.scene_agreement(sen, ref, prb, s["hr"], ok, THR) or {})
     print(m, "spatial attention:", {k: (round(v, 3) if isinstance(v, float) else v) for k, v in scene_stats[m]["spatial_attention"].items()})
 
-json.dump(dict(layers=dict(channel="cbam_channel_att", spatial="cbam_spatial_att", output="cbam_out"),
-               feature_grid=[int(h), int(w)], spatial_attention_raw=dict(mean=float(raw.mean()), min=float(raw.min()),
-               max=float(raw.max()), mean_patch_dynamic_range=float(sp_range.mean())),
-               channel=CH, spatial_vs_gradcam=res, sanity_randomised_model=sanity, scene=scene_stats,
-               chance_top20_iou=U.CHANCE_TOP20_IOU),
-          open(OUT_DIR / "step6_metrics.json", "w"), indent=1)
+with open(OUT_DIR / "step6_metrics.json", "w", encoding="utf-8") as _fh:
+    json.dump(dict(layers=dict(channel="cbam_channel_att", spatial="cbam_spatial_att", output="cbam_out"),
+                   feature_grid=[int(h), int(w)], spatial_attention_raw=dict(mean=float(raw.mean()), min=float(raw.min()),
+                   max=float(raw.max()), mean_patch_dynamic_range=float(sp_range.mean())),
+                   channel=CH, spatial_vs_gradcam=res, sanity_randomised_model=sanity, scene=scene_stats,
+                   chance_top20_iou=U.CHANCE_TOP20_IOU),
+              _fh, indent=1)
 
 # ------------------------------------------------------------------ 5. figures
 def overlay(ax, base_img, c, cmap, vmin, vmax, title):
@@ -183,7 +185,7 @@ ax[1].set_title(f"Per-patch Spearman: CBAM spatial att. vs Grad-CAM (mean {rho_.
 plt.tight_layout(); plt.savefig(OUT_DIR / "step6_cbam_focus.png", dpi=80); plt.close()
 
 for m in MONTHS:
-    s = ctx.scene[m]; sv = s["valid"]; ssp = scene_sp[m]; ref = np.load(OUT_DIR / f"step4_scene_cam_{m}.npz")["cam"].astype("float32")
+    s = ctx.scene[m]; sv = U.scene_valid(s); ssp = scene_sp[m]; ref = np.load(OUT_DIR / f"step4_scene_cam_{m}.npz")["cam"].astype("float32")
     st = scene_stats[m]["spatial_attention"]
     fig, ax = plt.subplots(1, 3, figsize=(21, 6.5))
     overlay(ax[0], np.ma.masked_where(~sv, s["ndvi"].astype("float32")), np.nan_to_num(ssp), "YlGn", 0, .7, f"{m}  CBAM spatial attention over NDVI")

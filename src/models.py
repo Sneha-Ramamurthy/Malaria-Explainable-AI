@@ -45,7 +45,7 @@ def build_model(mean, var, input_shape=(64, 64, 2), alpha=0.5, cut="block_12_add
     for l in bb.layers:                       # default momentum (0.999) is too slow for a small dataset:
         if isinstance(l, layers.BatchNormalization):   # running stats would never converge -> broken inference
             l.momentum = 0.9
-    bb = keras.Model(bb.input, bb.get_layer(cut).output, name="mobilenetv2_trunk")  # 8x8 feature map
+    bb = keras.Model(bb.input, bb.get_layer(cut).output, name="mobilenetv2_trunk")  # feature map: 16x16 for cut='block_5_add' (128 px input / stride 8), 8x8 for 'block_12_add'
     x = bb(x)
     x = cbam_block(x)
     x = layers.Conv2D(64, 3, padding="same", activation="relu", name="last_conv")(x)
